@@ -8,8 +8,9 @@ from app.models.chapter     import SgsChapterContent
 from app.models.question_paper import TeacherQuestionPaper
 from app.models.parent_notification import ParentNotification
 from app.models.teacher_class_map import TeacherClassMap
+from app.models.exam import ExamMaster
 
 __all__ = ["UserMaster", "TeacherMaster", "TeacherNote",
            "StudentMaster", "Assessment", "AssessmentResult",
            "TeacherLessonPlan", "SgsChapterContent", "TeacherQuestionPaper",
-           "ParentNotification", "TeacherClassMap"]
+           "ParentNotification", "TeacherClassMap", "ExamMaster"]
