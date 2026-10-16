@@ -167,6 +167,78 @@ def update_marks(db: Session, assessment: Assessment, payload) -> Assessment:
     return assessment
 
 
+def add_marks(db: Session, assessment: Assessment, marks: list) -> Assessment:
+    """Add students to a test that already exists.
+
+    Marks entry writes a whole class at once, but auto-correct marks one paper
+    at a time — the teacher scans one student, then the next. Each of those
+    belongs on the same assessment rather than creating a row per child, so
+    this appends to one.
+
+    A student already on the test is updated rather than duplicated. Marking a
+    paper twice is a correction, not a second result, and two rows for one
+    child would break every report that counts them.
+    """
+    roll = _roll(db, assessment.class_id)
+
+    strangers = [m.student_id for m in marks if m.student_id not in roll]
+    if strangers:
+        raise RollError(f"Students not on this class's roll: {strangers}")
+
+    now = datetime.utcnow()
+    max_marks = float(assessment.max_marks)
+    existing = {r.student_id: r for r in assessment.results}
+
+    for m in marks:
+        if m.marks_obtained is not None and (m.marks_obtained < 0 or m.marks_obtained > max_marks):
+            raise ValueError(
+                f"Marks for student {m.student_id} must be between 0 and {max_marks}"
+            )
+
+        value = Decimal(str(m.marks_obtained)) if m.marks_obtained is not None else None
+        pct = (
+            Decimal(str(_percentage(m.marks_obtained, max_marks)))
+            if not m.is_absent and m.marks_obtained is not None else None
+        )
+
+        row = existing.get(m.student_id)
+        if row:
+            row.marks_obtained = value
+            row.percentage = pct
+            row.is_absent = m.is_absent
+            row.updated_at = now
+        else:
+            db.add(AssessmentResult(
+                assessment_id=assessment.assessment_id,
+                student_id=m.student_id,
+                roll_number=roll[m.student_id].roll_no or "",
+                student_name=roll[m.student_id].full_name or "",
+                marks_obtained=value,
+                percentage=pct,
+                is_absent=m.is_absent,
+                created_at=now,
+                updated_at=now,
+                record_status=ACTIVE,
+                version_no=1,
+            ))
+
+    db.flush()
+    db.refresh(assessment)
+
+    scored = [r for r in assessment.results if not r.is_absent and r.marks_obtained is not None]
+    assessment.total_students = len(assessment.results)
+    assessment.submitted = len(scored)
+    assessment.class_average = (
+        Decimal(str(round(sum(float(r.marks_obtained) for r in scored) / len(scored), 2)))
+        if scored else None
+    )
+    assessment.updated_at = now
+
+    db.commit()
+    db.refresh(assessment)
+    return assessment
+
+
 def exams_for_year(db: Session, academic_year: str | None = None) -> list[ExamMaster]:
     """The scheduled exams a teacher can record marks against."""
     q = db.query(ExamMaster).filter(
