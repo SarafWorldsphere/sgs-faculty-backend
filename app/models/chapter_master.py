@@ -1,9 +1,9 @@
 """
-ChapterMaster — maps sgs_chapter_master.
+ChapterMaster — maps chapter_master.
 
 The canonical chapter record. Linked to a subject via subject_id (class is
-derived through the subject). sgs_chapter_content.chapter_id and
-sgs_file_storage_metadata.entity_id both reference chapter_id here.
+derived through the subject). chapter_content.chapter_id and
+file_storage_metadata.entity_id both reference chapter_id here.
 """
 
 from sqlalchemy import BigInteger, Column, Integer, String, Text
@@ -12,7 +12,7 @@ from app.db.session import Base
 
 
 class ChapterMaster(Base):
-    __tablename__ = "sgs_chapter_master"
+    __tablename__ = "chapter_master"
 
     chapter_id          = Column(BigInteger, primary_key=True, autoincrement=True)
     subject_id          = Column(BigInteger, nullable=True, index=True)

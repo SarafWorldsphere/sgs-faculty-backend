@@ -1,5 +1,5 @@
 """
-SubjectMaster — maps to sgs_subject_master table.
+SubjectMaster — maps to subject_master table.
 Subjects are scoped to a class via class_id (and optionally a teacher).
 """
 
@@ -9,7 +9,7 @@ from app.db.session import Base
 
 
 class SubjectMaster(Base):
-    __tablename__ = "sgs_subject_master"
+    __tablename__ = "subject_master"
 
     subject_id    = Column(BigInteger, primary_key=True)
     class_id      = Column(BigInteger, nullable=True)

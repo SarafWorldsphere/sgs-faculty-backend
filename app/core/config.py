@@ -18,8 +18,13 @@ class Settings(BaseSettings):
 
     AI_SERVICE_URL: str = "http://16.112.236.67:7007"
 
-    # Printed on the lesson-plan masthead. Per-school, so it lives in .env.
-    SCHOOL_NAME: str = ""
+    # SCHOOL_NAME was here. The masthead now reads the school this request
+    # resolved to (current_school().config), because one process serves every
+    # school and a single configured name would be wrong for all but one.
+
+    # Host lookup for SchoolMiddleware. Points at the control database, which
+    # on the shared setup is the same database as DATABASE_URL.
+    SARASWATI_DATABASE_URL: str = ""
 
     # One period, in minutes — the form counts periods, the AI counts minutes.
     PERIOD_MINUTES: int = 45

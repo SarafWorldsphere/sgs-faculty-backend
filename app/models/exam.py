@@ -1,8 +1,8 @@
 """
-ExamMaster — the school's scheduled examinations. Maps to sgs_exam_master.
+ExamMaster — the school's scheduled examinations. Maps to exam_master.
 
 PT-1 to PT-4 and the summative exams live here, each with its own window. An
-assessment points at one of these through sgs_assessments.exam_id, which is
+assessment points at one of these through assessments.exam_id, which is
 what lets the headmaster report "PT-2 for Class 9" rather than guessing from a
 free-text title.
 
@@ -16,7 +16,7 @@ from app.db.session import Base
 
 
 class ExamMaster(Base):
-    __tablename__ = "sgs_exam_master"
+    __tablename__ = "exam_master"
 
     exam_id          = Column(BigInteger, primary_key=True)
     exam_name        = Column(String(150), nullable=True)

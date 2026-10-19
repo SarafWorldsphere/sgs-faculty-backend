@@ -1,5 +1,5 @@
 """
-Assignment models — map to sgs_assignment_master and sgs_assignment_results.
+Assignment models — map to assignment_master and assignment_results.
 Assignments are scoped to a class; submissions live in the results table.
 """
 
@@ -9,7 +9,7 @@ from app.db.session import Base
 
 
 class AssignmentMaster(Base):
-    __tablename__ = "sgs_assignment_master"
+    __tablename__ = "assignment_master"
 
     assignment_id    = Column(BigInteger, primary_key=True)
     chapter_id       = Column(BigInteger, nullable=True)
@@ -29,7 +29,7 @@ class AssignmentResult(Base):
     status "assigned", updated when the student submits. The title/subject/
     due-date columns are copies of the master row so student-side apps can
     list without a join."""
-    __tablename__ = "sgs_assignment_results"
+    __tablename__ = "assignment_results"
 
     assignment_result_id = Column(BigInteger, primary_key=True)
     assignment_id        = Column(BigInteger, nullable=True)

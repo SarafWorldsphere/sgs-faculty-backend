@@ -1,5 +1,5 @@
 """
-TeacherNote — maps to sgs_teacher_notes table.
+TeacherNote — maps to teacher_notes table.
 Rich note data (title, content, chapter, content_type, tags) is stored
 as a JSON string in the `notes` column since the sgs table has no separate fields.
 """
@@ -18,12 +18,12 @@ class ContentType(str, enum.Enum):
 
 
 class TeacherNote(Base):
-    __tablename__ = "sgs_teacher_notes"
+    __tablename__ = "teacher_notes"
 
     notes_id   = Column(BigInteger, primary_key=True)
     teacher_id = Column(
         BigInteger,
-        ForeignKey("sgs_teacher_master.teacher_id", ondelete="CASCADE"),
+        ForeignKey("teacher_master.teacher_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

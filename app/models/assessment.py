@@ -1,5 +1,5 @@
 """
-Assessment + AssessmentResult — map to sgs_assessments and sgs_assessment_results.
+Assessment + AssessmentResult — map to assessments and assessment_results.
 assessment_type is stored as String (maps to PostgreSQL USER-DEFINED enum).
 AssessmentResult has denormalized roll_number and student_name columns.
 """
@@ -19,10 +19,10 @@ class AssessmentType(str, enum.Enum):
 
 
 class Assessment(Base):
-    __tablename__ = "sgs_assessments"
+    __tablename__ = "assessments"
 
     assessment_id   = Column(BigInteger, primary_key=True)
-    teacher_id      = Column(BigInteger, ForeignKey("sgs_teacher_master.teacher_id", ondelete="CASCADE"), nullable=False, index=True)
+    teacher_id      = Column(BigInteger, ForeignKey("teacher_master.teacher_id", ondelete="CASCADE"), nullable=False, index=True)
     title           = Column(String(300), nullable=False)
     assessment_type = Column(String(50),  nullable=False, default="test")
     subject         = Column(String(150), nullable=True)
@@ -34,7 +34,7 @@ class Assessment(Base):
     # rows and readers that predate class_id. class_id is the one to filter on.
     class_name      = Column(String(50),  nullable=True)
     class_id        = Column(BigInteger,  nullable=True, index=True)
-    # Points at sgs_exam_master for a scheduled exam (PT-1..PT-4). NULL for a
+    # Points at exam_master for a scheduled exam (PT-1..PT-4). NULL for a
     # weekly class test, which is not a school-scheduled exam.
     exam_id         = Column(BigInteger,  nullable=True, index=True)
     section         = Column(String(50),  nullable=True)
@@ -51,11 +51,11 @@ class Assessment(Base):
 
 
 class AssessmentResult(Base):
-    __tablename__ = "sgs_assessment_results"
+    __tablename__ = "assessment_results"
 
     result_id      = Column(BigInteger, primary_key=True)
-    assessment_id  = Column(BigInteger, ForeignKey("sgs_assessments.assessment_id", ondelete="CASCADE"), nullable=False, index=True)
-    student_id     = Column(BigInteger, ForeignKey("sgs_student_master.student_id", ondelete="CASCADE"), nullable=False, index=True)
+    assessment_id  = Column(BigInteger, ForeignKey("assessments.assessment_id", ondelete="CASCADE"), nullable=False, index=True)
+    student_id     = Column(BigInteger, ForeignKey("student_master.student_id", ondelete="CASCADE"), nullable=False, index=True)
     roll_number    = Column(String(50),  nullable=False)
     student_name   = Column(String(255), nullable=False)
     marks_obtained = Column(Numeric,     nullable=True)
