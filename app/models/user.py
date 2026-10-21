@@ -1,6 +1,6 @@
 """
 UserMaster — authentication table.
-Maps to sgs_users_masters table.
+Maps to users_masters table.
 """
 
 from sqlalchemy import Column, BigInteger, Integer, String, Boolean, DateTime, Text
@@ -9,7 +9,7 @@ from app.db.session import Base
 
 
 class UserMaster(Base):
-    __tablename__ = "sgs_users_masters"
+    __tablename__ = "users_masters"
 
     user_id         = Column(BigInteger, primary_key=True)
     login_id        = Column(String(255), unique=True, nullable=False, index=True)

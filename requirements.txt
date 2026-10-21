@@ -13,3 +13,6 @@ pydantic-settings==2.7.0
 email-validator==2.2.0
 pdfplumber==0.11.10
 boto3==1.43.61
+
+# School resolution, row-level security and tenant-prefixed S3 keys.
+saraswati-tenant @ git+https://github.com/SarafWorldsphere/saraswati-tenant-kit.git@main#subdirectory=python

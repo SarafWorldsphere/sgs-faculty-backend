@@ -1,10 +1,16 @@
 """
 Shared FastAPI dependencies.
+
 get_current_teacher — verifies JWT and returns the authenticated teacher's ID.
+get_active_class_id  — resolves which class the request is about, and checks the
+                       teacher is actually assigned to it.
 """
 
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from saraswati_tenant import current_school
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -12,8 +18,28 @@ from app.db.session import get_db
 from app.core.security import decode_token
 from app.models.teacher import TeacherMaster
 from app.models.user import UserMaster
+from app.services import teacher_class_service
 
 bearer_scheme = HTTPBearer()
+
+
+def _require_this_school(claims: dict) -> None:
+    """Reject a token that was issued by a different school.
+
+    Without this, a teacher signed in at one school could point the same token
+    at another school's host and be served that school's data: the policy would
+    scope the queries to the host's school quite happily, because the policy
+    answers "whose rows" and not "may this person be here at all".
+
+    A token minted before the school was stamped into it carries no tenant_id
+    and is refused for the same reason. That logs every teacher out once, on
+    the deploy that turns this on.
+    """
+    if claims.get("tenant_id") != current_school().tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session belongs to a different school. Please sign in again.",
+        )
 
 _DEV_TEACHER = TeacherMaster(
     teacher_id=1,
@@ -43,6 +69,8 @@ def get_current_teacher(
             detail="Invalid or expired token",
         )
 
+    _require_this_school(payload)
+
     teacher_id: int = payload.get("teacher_id")
     if not teacher_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing teacher_id")
@@ -64,3 +92,38 @@ def get_current_teacher(
     db.rollback()
 
     return teacher
+
+
+def get_active_class_id(
+    class_id: Optional[int] = Query(
+        default=None,
+        description="Which of the teacher's classes this request is about. "
+                    "Omitted means their primary class, as before.",
+    ),
+    teacher: TeacherMaster = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+) -> Optional[int]:
+    """
+    The class a class-scoped endpoint should work on.
+
+    No class_id means the teacher's primary assignment — the behaviour every
+    endpoint had before multiple classes existed, so old clients are unaffected.
+
+    A class_id the teacher is not assigned to is refused. This is the whole
+    authorisation check for the feature: the parameter comes from the client, so
+    without it a teacher could read any class in the school by editing a URL.
+    """
+    if class_id is None:
+        return teacher.class_id
+
+    allowed = teacher_class_service.allowed_class_ids(db, teacher)
+    # Same reason as above: leave the session idle rather than idle-in-transaction,
+    # so a slow AI call downstream cannot have its session killed at teardown.
+    db.rollback()
+
+    if class_id not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not assigned to this class",
+        )
+    return class_id

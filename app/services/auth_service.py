@@ -1,3 +1,4 @@
+from saraswati_tenant import current_school
 from sqlalchemy.orm import Session
 
 from app.models.user import UserMaster
@@ -6,36 +7,33 @@ from app.models.class_master import ClassMaster
 from app.models.student import StudentMaster
 from app.core.security import verify_password, create_access_token
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.services import student_service
+from app.services import student_service, teacher_class_service
+
+# Kept as a module-level name: the ordinal formatting now lives with the rest of
+# the class resolution in teacher_class_service.
+_class_display = teacher_class_service.class_display_name
 
 
-def _class_display(class_name: str) -> str:
-    """Format a class number as ordinal grade: '8' → '8th Grade'."""
-    try:
-        n = int(class_name)
-        if 10 <= n % 100 <= 20:
-            suffix = "th"
-        else:
-            suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-        return f"{n}{suffix} Grade"
-    except (ValueError, TypeError):
-        return str(class_name)
-
-
-def get_class_context(db: Session, teacher: TeacherMaster) -> tuple[str | None, int]:
+def get_class_context(
+    db: Session, teacher: TeacherMaster, class_id=None
+) -> tuple[str | None, int]:
     """
-    Resolve a teacher's display class name (from sgs_class_master) and the
-    count of active students in that class. Used by both /login and /me so
-    the header/dashboard always show real values.
+    Resolve a display class name (from sgs_class_master) and the count of active
+    students in it. Used by both /login and /me so the header/dashboard always
+    show real values.
+
+    `class_id` defaults to the teacher's primary assignment — the behaviour
+    before a teacher could have more than one class.
     """
-    if not teacher.class_id:
+    class_id = class_id or teacher.class_id
+    if not class_id:
         return None, 0
 
-    cls = db.query(ClassMaster).filter(ClassMaster.class_id == teacher.class_id).first()
-    class_name = (cls.class_name if cls and cls.class_name else _class_display(teacher.class_id))
+    cls = db.query(ClassMaster).filter(ClassMaster.class_id == class_id).first()
+    class_name = (cls.class_name if cls and cls.class_name else _class_display(class_id))
 
     # Same filter as the Students tab — see student_service.
-    total_students = student_service.roll_count(db, teacher.class_id)
+    total_students = student_service.roll_count(db, class_id)
     return class_name, total_students
 
 
@@ -57,11 +55,16 @@ def authenticate_teacher(db: Session, payload: LoginRequest) -> TokenResponse:
         raise ValueError("No teacher profile found for this account")
 
     # 3. Issue JWT
+    # The school is stamped into the token so it cannot be carried to another
+    # one. Row-level security decides *which* school's rows a request sees; it
+    # has no opinion on whether this particular teacher belongs there, and on a
+    # shared database those are different questions.
     token = create_access_token(
         data={
             "sub": str(user.user_id),
             "teacher_id": teacher.teacher_id,
             "role": "teacher",
+            "tenant_id": current_school().tenant_id,
         }
     )
 
@@ -79,4 +82,7 @@ def authenticate_teacher(db: Session, payload: LoginRequest) -> TokenResponse:
         avatar_initials=None,
         school_name=None,
         total_students=total_students,
+        # Every class this teacher takes. One entry for a single-class teacher,
+        # so the frontend has no special case.
+        classes=teacher_class_service.class_options(db, teacher),
     )
