@@ -3,10 +3,11 @@ Which classes a teacher may work in.
 
 Two sources, both authoritative:
 
-  sgs_teacher_master.class_id     the primary assignment — one class, and what
-                                  every endpoint used before this existed
-  sgs_teacher_class_map           the full list, for teachers who take more
-                                  than one class
+  teacher_master.class_id            the primary assignment — one class, and
+                                     what every endpoint used before this
+                                     existed
+  teacher_class_subject_map          the full list, for teachers who take more
+                                     than one class
 
 The primary assignment is always allowed, mapped or not. A teacher with no map
 rows therefore sees exactly what they saw before, which is what lets this ship
@@ -18,16 +19,17 @@ could read any class's students, reports and submissions by changing one query
 parameter.
 """
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.class_master import ClassMaster
 from app.models.teacher import TeacherMaster
-from app.models.teacher_class_map import DELETED, TeacherClassMap
+from app.models.teacher_class_map import TeacherClassMap
 from app.schemas.auth import ClassOption
 
-_LIVE = or_(TeacherClassMap.record_status.is_(None),
-            TeacherClassMap.record_status != DELETED)
+# The kit replaces the old record_status text column with is_active, which is
+# NOT NULL DEFAULT true — so a live row is simply is_active true, with no null
+# case to allow for.
+_LIVE = TeacherClassMap.is_active.is_(True)
 
 
 def class_display_name(class_id) -> str:

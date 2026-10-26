@@ -1,16 +1,21 @@
 """
-ParentNotification — maps to sgs_parent_notifications.
+ParentNotification — maps to the kit's `parent_notifications`.
 
 The record of a message a teacher sent to a student's parents.
 
-Two columns are Postgres enums, not free text: `notification_type`
-(notification_type) and `sent_via` (notification_channel). Writing a value
-outside the enum fails at insert, and comparing them with LIKE/ILIKE raises
-"operator does not exist" — the same trap that broke the AI analytics
-queries. Always compare with ::text if you need a pattern match.
+In the old SGS database `notification_type` and `sent_via` were Postgres
+enums; in the kit they are plain text, so the "operator does not exist" trap
+on LIKE/ILIKE no longer applies. ALLOWED_TYPES below is now the only thing
+constraining the value, which means it is enforced in the application rather
+than the database — worth a CHECK constraint in the kit if that matters.
+
+The SGS migration has to cast the existing enum columns to text.
 
 `sent_via` is 'manual' until a real delivery channel (sms / whatsapp /
 email) is wired up; the row is the record, not proof of delivery.
+
+tenant_id is deliberately not declared — the kit's stamp trigger fills it on
+insert and the row-level security policy filters it on read.
 """
 
 from sqlalchemy import Column, BigInteger, Integer, String, Text, DateTime
@@ -33,11 +38,12 @@ CHANNEL_MANUAL = "manual"
 
 
 class ParentNotification(Base):
-    __tablename__ = "sgs_parent_notifications"
+    __tablename__ = "parent_notifications"
 
     notification_id   = Column(BigInteger, primary_key=True, autoincrement=True)
-    # varchar, matching sgs_teacher_master.teacher_id and every sibling table
-    teacher_id        = Column(String, nullable=False, index=True)
+    # bigint, matching teacher_master.teacher_id. The visible staff code
+    # ('T02') lives in teacher_master.teacher_code, not here.
+    teacher_id        = Column(BigInteger, nullable=False, index=True)
     student_id        = Column(BigInteger, nullable=False, index=True)
     notification_type = Column(String, nullable=False)   # enum notification_type
     message_text      = Column(Text, nullable=False)
