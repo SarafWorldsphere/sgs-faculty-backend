@@ -4,7 +4,7 @@ from app.db.session import Base
 
 
 class SgsChapterContent(Base):
-    __tablename__ = "sgs_chapter_content"
+    __tablename__ = "chapter_content"
 
     chapter_content_id = Column(BigInteger, primary_key=True, autoincrement=True)
     chapter_id         = Column(BigInteger, nullable=True)

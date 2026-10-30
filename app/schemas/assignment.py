@@ -23,12 +23,22 @@ class AssignmentStudentRow(BaseModel):
     roll_no: str | None = None
     status: str | None = None
     submitted_at: datetime | None = None
+    # What they turned in. The file itself is fetched separately — this only
+    # says whether one exists and what it is.
+    submission_text: str | None = None
+    submission_link: str | None = None
+    submitted_file_name: str | None = None
+    submitted_file_size: int | None = None
+    marks_obtained: float | None = None
+    total_marks: float | None = None
 
 
 class AssignmentStudentsResponse(BaseModel):
     assignment_id: int
+    title: str | None = None
     students: list[AssignmentStudentRow]
     total: int
+    submitted_count: int = 0
 
 
 class AssignmentListResponse(BaseModel):
