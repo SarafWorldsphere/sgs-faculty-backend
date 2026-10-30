@@ -18,7 +18,9 @@ class UserMaster(Base):
     email_id        = Column(String(255), nullable=True, index=True)
     mobile_no       = Column(String(50), nullable=True)
     role_id         = Column(BigInteger, nullable=True)
-    school_id       = Column(BigInteger, nullable=True)
+    # school_id is gone: the kit replaced it with tenant_id, which the stamp
+    # trigger fills and the policy filters. Declaring it here made every query
+    # on this table ask for a column the database does not have.
     is_active       = Column(Boolean, default=True, nullable=True)
     created_datetime = Column(DateTime, nullable=True)
     record_status   = Column(String(50), nullable=True)
