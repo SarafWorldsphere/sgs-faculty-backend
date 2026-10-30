@@ -42,7 +42,9 @@ class ClassOption(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
-    teacher_id: str
+    # int, not str: the kit's teacher_master.teacher_id is bigint. The visible
+    # staff code ('T02') lives in teacher_master.teacher_code.
+    teacher_id: int
     name: str
     email: str
     subject: str | None = None
@@ -55,7 +57,7 @@ class TokenResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    teacher_id: str
+    teacher_id: int
     name: str
     email: str
     subject: str | None = None
