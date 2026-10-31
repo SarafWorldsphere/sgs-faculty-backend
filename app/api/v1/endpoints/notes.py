@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.api.deps import get_current_teacher
+from app.api.deps import get_current_teacher, get_active_class_id
 from app.models.teacher import TeacherMaster
 from app.schemas.note import NoteCreate, NoteUpdate, NoteOut, NoteListResponse
 from app.services import note_service
@@ -14,9 +14,10 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 def list_notes(
     teacher: TeacherMaster = Depends(get_current_teacher),
     db: Session = Depends(get_db),
+    class_id=Depends(get_active_class_id),
 ):
-    """Fetch all notes for the authenticated teacher."""
-    notes = note_service.get_notes(db, teacher.teacher_id)
+    """The teacher's notes for the class they are currently working on."""
+    notes = note_service.get_notes(db, teacher.teacher_id, class_id)
     return NoteListResponse(notes=notes, total=len(notes))
 
 
@@ -25,9 +26,10 @@ def create_note(
     payload: NoteCreate,
     teacher: TeacherMaster = Depends(get_current_teacher),
     db: Session = Depends(get_db),
+    class_id=Depends(get_active_class_id),
 ):
-    """Create a new note (typed / voice / handwritten)."""
-    return note_service.create_note(db, teacher.teacher_id, payload)
+    """Create a note, stamped with the class it was written for."""
+    return note_service.create_note(db, teacher.teacher_id, payload, class_id)
 
 
 @router.get("/deleted", response_model=NoteListResponse)

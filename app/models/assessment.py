@@ -30,7 +30,13 @@ class Assessment(Base):
     chapter         = Column(String(255), nullable=True)
     assessment_date = Column(Date,        nullable=True)
     max_marks       = Column(Numeric,     nullable=False, default=100.0)
+    # class_name is the original free-text column and is kept filled for the
+    # rows and readers that predate class_id. class_id is the one to filter on.
     class_name      = Column(String(50),  nullable=True)
+    class_id        = Column(BigInteger,  nullable=True, index=True)
+    # Points at sgs_exam_master for a scheduled exam (PT-1..PT-4). NULL for a
+    # weekly class test, which is not a school-scheduled exam.
+    exam_id         = Column(BigInteger,  nullable=True, index=True)
     section         = Column(String(50),  nullable=True)
     total_students  = Column(Integer,     nullable=False, default=0)
     submitted       = Column(Integer,     nullable=False, default=0)

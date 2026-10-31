@@ -75,13 +75,17 @@ def _to_out(db: Session, a: AssignmentMaster) -> AssignmentOut:
     )
 
 
-def get_assignments(db: Session, teacher: TeacherMaster) -> List[AssignmentOut]:
-    """All assignments for the teacher's class, with per-assignment counts."""
-    if not teacher.class_id:
+def get_assignments(db: Session, class_id) -> List[AssignmentOut]:
+    """All assignments for one class, with per-assignment counts.
+
+    The caller resolves class_id through get_active_class_id, so it is always a
+    class the teacher is assigned to.
+    """
+    if not class_id:
         return []
     rows = (
         db.query(AssignmentMaster)
-        .filter(AssignmentMaster.class_id == teacher.class_id)
+        .filter(AssignmentMaster.class_id == class_id)
         .order_by(AssignmentMaster.due_date.asc().nullslast())
         .all()
     )
@@ -111,13 +115,14 @@ def _resolve_user_id(db: Session, teacher: TeacherMaster):
     return user.user_id if user else None
 
 
-def _resolve_targets(db: Session, teacher: TeacherMaster, requested: list[int] | None) -> list[int]:
+def _resolve_targets(db: Session, class_id, requested: list[int] | None) -> list[int]:
     """
-    The student ids this assignment goes to. Empty request = the whole roll.
-    Any requested id not on the roll is rejected outright — a teacher can only
-    assign work to their own class.
+    The student ids this assignment goes to. Empty request = the whole roll of
+    the class being assigned. Any requested id not on that roll is rejected
+    outright — a teacher can only assign work to a class they are assigned to,
+    and only to children in it.
     """
-    roll = {sid for (sid,) in student_service.roll_query(db, teacher.class_id)
+    roll = {sid for (sid,) in student_service.roll_query(db, class_id)
                                             .with_entities(StudentMaster.student_id).all()}
     if not requested:
         return sorted(roll)
@@ -127,9 +132,11 @@ def _resolve_targets(db: Session, teacher: TeacherMaster, requested: list[int] |
     return list(requested)
 
 
-def create_assignment(db: Session, teacher: TeacherMaster, payload: AssignmentCreate) -> AssignmentOut:
+def create_assignment(
+    db: Session, teacher: TeacherMaster, class_id, payload: AssignmentCreate
+) -> AssignmentOut:
     """Create an assignment and record who it went to (Assign-work modal)."""
-    targets = _resolve_targets(db, teacher, payload.student_ids)
+    targets = _resolve_targets(db, class_id, payload.student_ids)
     assigned_by = _resolve_user_id(db, teacher)
     now = datetime.utcnow()
 
@@ -139,7 +146,7 @@ def create_assignment(db: Session, teacher: TeacherMaster, payload: AssignmentCr
         subject_id=payload.subject_id,
         chapter_id=payload.chapter_id,
         due_date=payload.due_date,
-        class_id=teacher.class_id,
+        class_id=class_id,
         assigned_by=assigned_by,
         created_datetime=now,
         record_status="Active",
@@ -169,12 +176,16 @@ def create_assignment(db: Session, teacher: TeacherMaster, payload: AssignmentCr
     return _to_out(db, a)
 
 
-def get_assignment_students(db: Session, teacher: TeacherMaster, assignment_id: int) -> AssignmentStudentsResponse | None:
-    """Who an assignment went to and where each of them stands."""
+def get_assignment_students(db: Session, class_id, assignment_id: int) -> AssignmentStudentsResponse | None:
+    """Who an assignment went to and where each of them stands.
+
+    Scoped to the class being viewed, so an assignment belonging to another
+    class is not found rather than exposed.
+    """
     a = (
         db.query(AssignmentMaster)
         .filter(AssignmentMaster.assignment_id == assignment_id,
-                AssignmentMaster.class_id == teacher.class_id)
+                AssignmentMaster.class_id == class_id)
         .first()
     )
     if not a:
@@ -190,7 +201,19 @@ def get_assignment_students(db: Session, teacher: TeacherMaster, assignment_id: 
         AssignmentStudentRow(
             student_id=s.student_id, full_name=s.full_name, roll_no=s.roll_no,
             status=r.status, submitted_at=r.submitted_at,
+            submission_text=r.submission_text,
+            submission_link=r.submission_link,
+            submitted_file_name=r.submitted_file_name,
+            submitted_file_size=r.submitted_file_size,
+            marks_obtained=float(r.marks_obtained) if r.marks_obtained is not None else None,
+            total_marks=float(r.total_marks) if r.total_marks is not None else None,
         )
         for r, s in rows
     ]
-    return AssignmentStudentsResponse(assignment_id=assignment_id, students=students, total=len(students))
+    return AssignmentStudentsResponse(
+        assignment_id=assignment_id,
+        title=a.assignment_title,
+        students=students,
+        total=len(students),
+        submitted_count=sum(1 for x in students if x.submitted_at is not None),
+    )

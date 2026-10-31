@@ -44,14 +44,26 @@ DELETED = "Deleted"
 _LIVE = or_(TeacherNote.record_status.is_(None), TeacherNote.record_status != DELETED)
 
 
-def get_notes(db: Session, teacher_id: int) -> List[NoteOut]:
-    notes = (
-        db.query(TeacherNote)
-        .filter(TeacherNote.teacher_id == teacher_id, _LIVE)
-        .order_by(TeacherNote.created_at.desc())
-        .all()
-    )
-    return [_to_out(n) for n in notes]
+def get_notes(db: Session, teacher_id: int, class_id=None) -> List[NoteOut]:
+    """A teacher's notes, for one class when one is selected.
+
+    A teacher with two classes writes different notes for each, and before the
+    class selector existed both sets appeared together in one list with nothing
+    to tell them apart.
+
+    Notes written before this carry no class_id. They are kept in every list
+    rather than hidden: they belong to the teacher, nobody can say which class
+    they were for, and silently dropping work somebody wrote would be worse
+    than showing it twice.
+    """
+    q = db.query(TeacherNote).filter(TeacherNote.teacher_id == teacher_id, _LIVE)
+
+    if class_id is not None:
+        q = q.filter(
+            or_(TeacherNote.class_id == class_id, TeacherNote.class_id.is_(None))
+        )
+
+    return [_to_out(n) for n in q.order_by(TeacherNote.created_at.desc()).all()]
 
 
 def get_deleted_notes(db: Session, teacher_id: int) -> List[NoteOut]:
@@ -74,9 +86,11 @@ def get_note(db: Session, teacher_id: int, note_id: int) -> Optional[NoteOut]:
     return _to_out(note) if note else None
 
 
-def create_note(db: Session, teacher_id: int, payload: NoteCreate) -> NoteOut:
+def create_note(db: Session, teacher_id: int, payload: NoteCreate, class_id=None) -> NoteOut:
+    """Stamp the class a note was written for, so it can be found again."""
     note = TeacherNote(
         teacher_id=teacher_id,
+        class_id=class_id,
         notes=json.dumps({
             "title": payload.title,
             "content": payload.content,

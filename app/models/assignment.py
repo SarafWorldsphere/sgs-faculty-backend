@@ -3,7 +3,7 @@ Assignment models — map to sgs_assignment_master and sgs_assignment_results.
 Assignments are scoped to a class; submissions live in the results table.
 """
 
-from sqlalchemy import Column, BigInteger, Integer, String, Text, Date, DateTime
+from sqlalchemy import Column, BigInteger, Integer, Numeric, String, Text, Date, DateTime
 
 from app.db.session import Base
 
@@ -39,6 +39,15 @@ class AssignmentResult(Base):
     due_date             = Column(Date, nullable=True)
     status               = Column(String(50), nullable=True)
     submitted_at         = Column(DateTime, nullable=True)
+    # What the student actually turned in. file_content is a bytea blob and is
+    # deliberately not mapped — listing submissions must never load it.
+    submission_text      = Column(Text, nullable=True)
+    submission_link      = Column(String, nullable=True)
+    submitted_file_name  = Column(String, nullable=True)
+    submitted_file_type  = Column(String, nullable=True)
+    submitted_file_size  = Column(BigInteger, nullable=True)
+    marks_obtained       = Column(Numeric, nullable=True)
+    total_marks          = Column(Numeric, nullable=True)
     created_datetime     = Column(DateTime, nullable=True)
     record_status        = Column(String(20), nullable=True)
     version_no           = Column(Integer, nullable=True)

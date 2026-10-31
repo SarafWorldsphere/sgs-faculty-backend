@@ -1,9 +1,14 @@
 """
 Shared FastAPI dependencies.
+
 get_current_teacher — verifies JWT and returns the authenticated teacher's ID.
+get_active_class_id  — resolves which class the request is about, and checks the
+                       teacher is actually assigned to it.
 """
 
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -12,6 +17,7 @@ from app.db.session import get_db
 from app.core.security import decode_token
 from app.models.teacher import TeacherMaster
 from app.models.user import UserMaster
+from app.services import teacher_class_service
 
 bearer_scheme = HTTPBearer()
 
@@ -64,3 +70,38 @@ def get_current_teacher(
     db.rollback()
 
     return teacher
+
+
+def get_active_class_id(
+    class_id: Optional[int] = Query(
+        default=None,
+        description="Which of the teacher's classes this request is about. "
+                    "Omitted means their primary class, as before.",
+    ),
+    teacher: TeacherMaster = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
+) -> Optional[int]:
+    """
+    The class a class-scoped endpoint should work on.
+
+    No class_id means the teacher's primary assignment — the behaviour every
+    endpoint had before multiple classes existed, so old clients are unaffected.
+
+    A class_id the teacher is not assigned to is refused. This is the whole
+    authorisation check for the feature: the parameter comes from the client, so
+    without it a teacher could read any class in the school by editing a URL.
+    """
+    if class_id is None:
+        return teacher.class_id
+
+    allowed = teacher_class_service.allowed_class_ids(db, teacher)
+    # Same reason as above: leave the session idle rather than idle-in-transaction,
+    # so a slow AI call downstream cannot have its session killed at teardown.
+    db.rollback()
+
+    if class_id not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not assigned to this class",
+        )
+    return class_id
