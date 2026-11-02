@@ -6,7 +6,7 @@ from app.api.v1.endpoints import (
     virtual_slate, analytics, translate, speech, content_search,
     subjects, assignments, notices, questions,
     classes, chapter_files, assignment_files, parent_notifications,
-    timetable,
+    timetable, conversations,
 )
 
 api_router = APIRouter()
@@ -34,3 +34,4 @@ api_router.include_router(chapter_files.router)
 api_router.include_router(assignment_files.router)
 api_router.include_router(parent_notifications.router)
 api_router.include_router(timetable.router)
+api_router.include_router(conversations.router)
