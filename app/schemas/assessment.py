@@ -137,3 +137,40 @@ class AssessmentDetailOut(AssessmentOut):
 class AssessmentListResponse(BaseModel):
     assessments: List[AssessmentOut]
     total:       int
+
+
+class StudentMarkCell(BaseModel):
+    """One student's result in one of the month's tests."""
+
+    assessment_id:  int
+    marks_obtained: Optional[float] = None
+    percentage:     Optional[float] = None
+    is_absent:      bool = False
+
+
+class StudentMarksRow(BaseModel):
+    """
+    One student across every test in the month.
+
+    `total` and `max_total` cover only the tests the student actually sat: a
+    child absent for one of four tests is not scored out of all four, which
+    would read as a collapse in performance rather than an absence.
+    """
+
+    student_id:   int
+    name:         str
+    roll_number:  str
+    marks:        List[StudentMarkCell] = []
+    attempted:    int = 0
+    total:        Optional[float] = None
+    max_total:    float = 0
+    percentage:   Optional[float] = None
+
+
+class MonthlyMarksResponse(BaseModel):
+    """Every test in one subject for one month, with student-wise marks."""
+
+    subject:     Optional[str] = None
+    month:       str
+    assessments: List[AssessmentOut] = []
+    students:    List[StudentMarksRow] = []

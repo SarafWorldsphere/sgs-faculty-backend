@@ -16,7 +16,7 @@ Two rules shape everything here:
   transaction or neither is.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -247,3 +247,113 @@ def exams_for_year(db: Session, academic_year: str | None = None) -> list[ExamMa
     if academic_year:
         q = q.filter(ExamMaster.academic_year == academic_year)
     return q.order_by(ExamMaster.start_date.asc().nullslast(), ExamMaster.exam_id).all()
+
+
+# ── Monthly view ─────────────────────────────────────────────────────────────
+# "All the tests conducted for a subject during the month, with student-wise
+# marks." The per-test drawer already answers "how did the class do on Friday's
+# test"; this answers "how is this child doing in Maths this month", which is
+# the question a parent meeting or a report card starts from.
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    """'2026-11' -> the first of that month and the first of the next."""
+    try:
+        year, mon = (int(part) for part in month.split("-", 1))
+        start = date(year, mon, 1)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("month must be YYYY-MM") from exc
+    end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    return start, end
+
+
+def monthly_marks(
+    db: Session,
+    teacher: TeacherMaster,
+    month: str,
+    subject: str | None = None,
+    class_id=None,
+) -> tuple[list[Assessment], list[dict]]:
+    """
+    Every test this teacher ran in `month` (optionally for one subject), and
+    each student's marks across them.
+
+    Returns the assessments and a per-student list; the endpoint shapes them.
+    """
+    start, end = _month_bounds(month)
+
+    q = db.query(Assessment).filter(
+        Assessment.teacher_id == teacher.teacher_id,
+        Assessment.assessment_date >= start,
+        Assessment.assessment_date < end,
+    )
+    if subject:
+        q = q.filter(Assessment.subject.ilike(subject))
+    if class_id is not None:
+        # Same rule as the list endpoint: rows predating class_id have none and
+        # would otherwise vanish from every class.
+        q = q.filter((Assessment.class_id == class_id) | (Assessment.class_id.is_(None)))
+
+    assessments = q.order_by(Assessment.assessment_date, Assessment.assessment_id).all()
+    if not assessments:
+        return [], []
+
+    by_id = {a.assessment_id: a for a in assessments}
+
+    results = (
+        db.query(AssessmentResult)
+        .filter(AssessmentResult.assessment_id.in_(list(by_id)))
+        .all()
+    )
+
+    # roll_number and student_name are denormalised onto the result row, so the
+    # student list comes from the results themselves — no extra query, and a
+    # student who has since left still appears against the marks they earned.
+    students: dict[int, dict] = {}
+    for r in results:
+        s = students.setdefault(
+            r.student_id,
+            {
+                "student_id":  r.student_id,
+                "name":        r.student_name,
+                "roll_number": r.roll_number,
+                "marks":       [],
+                "attempted":   0,
+                "scored":      0.0,
+                "max_total":   0.0,
+            },
+        )
+        assessment = by_id[r.assessment_id]
+        marks = float(r.marks_obtained) if r.marks_obtained is not None else None
+        s["marks"].append(
+            {
+                "assessment_id":  r.assessment_id,
+                "marks_obtained": marks,
+                "percentage":     float(r.percentage) if r.percentage is not None else None,
+                "is_absent":      bool(r.is_absent),
+            }
+        )
+        # Absences and unentered marks are excluded from the total rather than
+        # counted as zero — see the schema note on why.
+        if not r.is_absent and marks is not None:
+            s["attempted"] += 1
+            s["scored"] += marks
+            s["max_total"] += float(assessment.max_marks)
+
+    rows = []
+    for s in sorted(students.values(), key=lambda x: (x["roll_number"] or "", x["name"] or "")):
+        total = s["scored"] if s["attempted"] else None
+        pct = round(s["scored"] / s["max_total"] * 100, 2) if s["max_total"] else None
+        rows.append(
+            {
+                "student_id":  s["student_id"],
+                "name":        s["name"],
+                "roll_number": s["roll_number"],
+                "marks":       s["marks"],
+                "attempted":   s["attempted"],
+                "total":       total,
+                "max_total":   s["max_total"],
+                "percentage":  pct,
+            }
+        )
+
+    return assessments, rows

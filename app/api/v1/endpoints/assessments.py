@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -11,6 +11,7 @@ from app.models.exam import ExamMaster
 from app.schemas.assessment import (
     AssessmentListResponse, AssessmentOut, AssessmentDetailOut, ResultOut,
     ExamListResponse, ExamOut, MarksEntryRequest, MarksUpdateRequest,
+    MonthlyMarksResponse, StudentMarksRow,
 )
 from app.services import marks_service
 
@@ -104,6 +105,38 @@ def list_exams(
     summatives. A weekly class test is not here; it is saved without an exam."""
     return ExamListResponse(
         exams=[ExamOut.model_validate(e) for e in marks_service.exams_for_year(db, academic_year)]
+    )
+
+
+@router.get("/monthly", response_model=MonthlyMarksResponse)
+def monthly_marks(
+    month: str = Query(..., pattern=r"^\d{4}-\d{2}$", description="YYYY-MM"),
+    subject: Optional[str] = Query(None, description="Omit for every subject"),
+    teacher: TeacherMaster = Depends(get_current_teacher),
+    class_id: Optional[int] = Depends(get_active_class_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Every test this teacher ran in a month, with each student's marks across
+    them.
+
+    Declared before /{assessment_id} on purpose: FastAPI matches in order, and
+    a path parameter would otherwise swallow "monthly" and try to read it as an
+    id.
+    """
+    try:
+        assessments, students = marks_service.monthly_marks(
+            db, teacher, month=month, subject=subject, class_id=class_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc))
+
+    names = _exam_names(db, assessments)
+    return MonthlyMarksResponse(
+        subject=subject,
+        month=month,
+        assessments=[_build_out(a, names.get(a.exam_id)) for a in assessments],
+        students=[StudentMarksRow(**row) for row in students],
     )
 
 
