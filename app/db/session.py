@@ -1,5 +1,6 @@
 import logging
 
+from saraswati_tenant import apply_rls, bind_rls
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 from app.core.config import settings
@@ -17,6 +18,7 @@ engine = build_engine(
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+bind_rls(SessionLocal)
 
 
 class Base(DeclarativeBase):
@@ -26,6 +28,10 @@ class Base(DeclarativeBase):
 def get_db():
     db = SessionLocal()
     try:
+        # bind_rls reapplies the school on every later transaction. This call
+        # is the strict check: a route reached with no school bound means the
+        # middleware did not run, and that should fail here.
+        apply_rls(db)
         yield db
     finally:
         # Closing rolls back, which talks to the server. On the AI endpoints the

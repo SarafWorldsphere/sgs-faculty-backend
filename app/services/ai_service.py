@@ -2,6 +2,7 @@ import re
 import re
 import httpx
 from fastapi import HTTPException, status
+from saraswati_tenant import current_school
 
 from app.core.config import settings
 
@@ -174,7 +175,10 @@ async def generate_lesson_plan(req, teacher) -> dict:
     on the form.
     """
     header = {
-        "school_name":          req.schoolName or settings.SCHOOL_NAME,
+        # The school is whichever one this request resolved to, not a value
+        # from .env — one process now serves every school, so a configured
+        # name would print the wrong masthead on all but one of them.
+        "school_name":          req.schoolName or current_school().config.get("schoolName", ""),
         "teacher_name":         teacher.full_name or "",
         "designation":          req.designation or teacher.role or "Teacher",
         "class_section":        req.classSection or _class_section(teacher),

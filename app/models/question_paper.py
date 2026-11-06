@@ -15,15 +15,15 @@ from app.db.session import Base
 
 
 class TeacherQuestionPaper(Base):
-    __tablename__ = "sgs_question_papers"
+    __tablename__ = "question_papers"
 
     paper_id      = Column(BigInteger, primary_key=True, autoincrement=True)
-    # String, not BigInteger: sgs_teacher_master.teacher_id is varchar in the
+    # String, not BigInteger: teacher_master.teacher_id is varchar in the
     # database. The older models declare BigInteger and get away with it because
     # the values are numeric strings; this one says what the column is.
     teacher_id    = Column(
         String,
-        ForeignKey("sgs_teacher_master.teacher_id", ondelete="CASCADE"),
+        ForeignKey("teacher_master.teacher_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

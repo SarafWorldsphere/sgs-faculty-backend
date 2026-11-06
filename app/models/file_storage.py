@@ -1,5 +1,5 @@
 """
-FileStorageMetadata — maps sgs_file_storage_metadata.
+FileStorageMetadata — maps file_storage_metadata.
 
 Generic file table keyed by (entity_type, entity_id). Chapter study material
 uses entity_type='CHAPTER_STUDY_MATERIAL' with entity_id = chapter_id.
@@ -15,7 +15,7 @@ ENTITY_ASSIGNMENT_ATTACHMENT = "ASSIGNMENT_ATTACHMENT"
 
 
 class FileStorageMetadata(Base):
-    __tablename__ = "sgs_file_storage_metadata"
+    __tablename__ = "file_storage_metadata"
 
     file_id             = Column(BigInteger, primary_key=True, autoincrement=True)
     entity_type         = Column(String,   nullable=False)

@@ -1,3 +1,4 @@
+from saraswati_tenant import current_school
 from sqlalchemy.orm import Session
 
 from app.models.user import UserMaster
@@ -54,11 +55,16 @@ def authenticate_teacher(db: Session, payload: LoginRequest) -> TokenResponse:
         raise ValueError("No teacher profile found for this account")
 
     # 3. Issue JWT
+    # The school is stamped into the token so it cannot be carried to another
+    # one. Row-level security decides *which* school's rows a request sees; it
+    # has no opinion on whether this particular teacher belongs there, and on a
+    # shared database those are different questions.
     token = create_access_token(
         data={
             "sub": str(user.user_id),
             "teacher_id": teacher.teacher_id,
             "role": "teacher",
+            "tenant_id": current_school().tenant_id,
         }
     )
 

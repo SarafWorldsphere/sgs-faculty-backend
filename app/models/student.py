@@ -1,5 +1,5 @@
 """
-StudentMaster — maps to sgs_student_master table.
+StudentMaster — maps to student_master table.
 Students are linked to a teacher via class_id (teacher.class_id == student.class_id).
 """
 
@@ -10,7 +10,7 @@ from app.db.session import Base
 
 
 class StudentMaster(Base):
-    __tablename__ = "sgs_student_master"
+    __tablename__ = "student_master"
 
     student_id      = Column(BigInteger, primary_key=True)
     admission_no    = Column(String(50),  nullable=True)
