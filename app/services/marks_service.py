@@ -40,6 +40,21 @@ def _roll(db: Session, class_id) -> dict[int, StudentMaster]:
     return {s.student_id: s for s in student_service.roll_query(db, class_id).all()}
 
 
+def roll_for(db: Session, class_id) -> dict[int, StudentMaster]:
+    """
+    The same roll, for callers outside this module.
+
+    The assessment detail view needs it to list every student in the class,
+    marked or not. Deliberately the same query that decides who a mark may be
+    saved against — if the two ever diverged, the screen would offer a student
+    whose mark could not then be stored.
+
+    Not filtered by section. The roll has always been by class alone, and
+    narrowing it here would quietly drop students from a teacher's list.
+    """
+    return _roll(db, class_id)
+
+
 def _percentage(marks, max_marks: float):
     if marks is None or not max_marks:
         return None
@@ -130,12 +145,22 @@ def update_marks(db: Session, assessment: Assessment, payload) -> Assessment:
 
     Only the students named in the request are touched — a teacher fixing one
     child's mark should not have to resend the whole class.
+
+    A student on the roll with no row yet is created, not refused. The detail
+    view lists the whole class so a teacher can finish a partly-entered test
+    later; if saving then rejected everyone who had been left blank, showing
+    them would be a trap rather than a help. The check is against the roll,
+    which is the question that actually matters — is this child in this class.
     """
     existing = {r.student_id: r for r in assessment.results}
+    roll = _roll(db, assessment.class_id)
 
-    strangers = [m.student_id for m in payload.marks if m.student_id not in existing]
+    strangers = [
+        m.student_id for m in payload.marks
+        if m.student_id not in existing and m.student_id not in roll
+    ]
     if strangers:
-        raise RollError(f"These students have no result on this test: {strangers}")
+        raise RollError(f"Students not on this class's roll: {strangers}")
 
     now = datetime.utcnow()
     max_marks = float(assessment.max_marks)
@@ -145,16 +170,35 @@ def update_marks(db: Session, assessment: Assessment, payload) -> Assessment:
             raise ValueError(
                 f"Marks for student {m.student_id} must be between 0 and {max_marks}"
             )
-        row = existing[m.student_id]
-        row.marks_obtained = Decimal(str(m.marks_obtained)) if m.marks_obtained is not None else None
-        row.percentage = (
+        value = Decimal(str(m.marks_obtained)) if m.marks_obtained is not None else None
+        pct = (
             Decimal(str(_percentage(m.marks_obtained, max_marks)))
             if not m.is_absent and m.marks_obtained is not None else None
         )
+
+        row = existing.get(m.student_id)
+        if row is None:
+            student = roll[m.student_id]
+            row = AssessmentResult(
+                assessment_id=assessment.assessment_id,
+                student_id=m.student_id,
+                roll_number=student.roll_no or "",
+                student_name=student.full_name or "",
+                created_at=now,
+                record_status=ACTIVE,
+                version_no=1,
+            )
+            db.add(row)
+            existing[m.student_id] = row
+
+        row.marks_obtained = value
+        row.percentage = pct
         row.is_absent = m.is_absent
         row.updated_at = now
 
+    db.flush()
     scored = [r for r in existing.values() if not r.is_absent and r.marks_obtained is not None]
+    assessment.total_students = len(existing)
     assessment.submitted = len(scored)
     assessment.class_average = (
         Decimal(str(round(sum(float(r.marks_obtained) for r in scored) / len(scored), 2)))

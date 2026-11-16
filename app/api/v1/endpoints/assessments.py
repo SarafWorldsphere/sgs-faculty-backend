@@ -191,13 +191,46 @@ def correct_marks(
 
 
 def _detail(db: Session, a: Assessment) -> AssessmentDetailOut:
+    """
+    The whole class, not only the students already marked.
+
+    This used to return a.results, which is one row per mark entered. A
+    teacher who saved five of forty saw five students and no way to tell
+    whether the other thirty-five were absent, pending, or simply lost. The
+    roll is the list; the marks are what is filled in against it.
+
+    Students with no row come back with result_id and marks_obtained null, so
+    the screen can show them as pending and the teacher can finish later
+    without the saved marks being disturbed.
+    """
     exam_name = _exam_names(db, [a]).get(a.exam_id)
     max_marks = float(a.max_marks)
     out = _build_out(a, exam_name)
-    results = sorted(
-        [_build_result(r, max_marks) for r in a.results],
-        key=lambda x: x.roll_number,
-    )
+
+    results = [_build_result(r, max_marks) for r in a.results]
+    marked = {r.student_id for r in results}
+
+    # Only when the assessment knows its class. An older row without class_id
+    # has no roll to show, and listing the wrong class would be worse than
+    # listing none.
+    if a.class_id:
+        for student_id, s in marks_service.roll_for(db, a.class_id).items():
+            if student_id in marked:
+                continue
+            results.append(
+                ResultOut(
+                    result_id=None,
+                    student_id=student_id,
+                    student_name=s.full_name or "",
+                    roll_number=str(s.roll_no or ""),
+                    marks_obtained=None,
+                    max_marks=max_marks,
+                    percentage=None,
+                    is_absent=False,
+                )
+            )
+
+    results.sort(key=lambda x: (x.roll_number or "", x.student_name or ""))
     return AssessmentDetailOut(**out.model_dump(), results=results)
 
 

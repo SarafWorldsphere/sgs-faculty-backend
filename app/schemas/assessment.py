@@ -99,7 +99,10 @@ class MarksUpdateRequest(BaseModel):
 
 
 class ResultOut(BaseModel):
-    result_id:      int
+    # Null for a student on the roll who has no mark recorded yet. The detail
+    # view lists the whole class, not only the rows that exist, so the teacher
+    # can see who is still pending rather than who is missing from the screen.
+    result_id:      Optional[int] = None
     student_id:     int
     student_name:   str
     roll_number:    str
