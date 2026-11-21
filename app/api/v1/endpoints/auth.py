@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, status
+from saraswati_tenant import current_school
 from sqlalchemy.orm import Session
 from typing import Optional
 
@@ -99,10 +100,17 @@ def sso_token(
     user = db.query(UserMaster).filter(UserMaster.login_id == email).first()
     user_id = user.user_id if user else teacher.teacher_id
 
+    # The school is stamped into the token, exactly as the password login does.
+    # get_current_teacher refuses a token whose tenant_id does not match the
+    # host being asked, and a token with no tenant_id at all fails that test —
+    # so without this line every SSO session is rejected on its first API call.
+    # Google sign-in through the portal is the only way most teachers get in,
+    # which made this the whole dashboard rather than an edge case.
     token = create_access_token(data={
         "sub": str(user_id),
         "teacher_id": teacher.teacher_id,
         "role": "teacher",
+        "tenant_id": current_school().tenant_id,
     })
 
     return TokenResponse(
