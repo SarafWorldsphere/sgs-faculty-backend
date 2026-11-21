@@ -8,6 +8,29 @@ from app.core.config import settings
 
 _TIMEOUT = 60.0
 
+# State and CBSE set different question patterns, so every generation call has
+# to carry the board. One process now serves every school, and the two schools
+# on it do not share a board — SGS is CBSE, SSS follows AP SCERT — so a single
+# configured value would be wrong for one of them on every paper it generated.
+#
+# Read from the school this request resolved to, the same way schoolName is.
+# settings.SCHOOL_BOARD stays as the fallback: a single-school deployment has
+# no tenant config to read, and a tenant whose config predates this key should
+# keep working rather than send the AI something it does not understand.
+_BOARDS = ("State", "CBSE")
+
+
+def _school_board() -> str:
+    """The board for the school this request belongs to."""
+    try:
+        board = (current_school().config or {}).get("board")
+    except Exception:
+        # No school resolved — a background job, or a single-school deployment
+        # with no tenant middleware in front of it.
+        board = None
+    return board if board in _BOARDS else settings.SCHOOL_BOARD
+
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -252,7 +275,7 @@ async def generate_question_paper(
         # Without this the AI was never told which, and answered from the
         # chapter text alone — whichever textbook happened to be uploaded
         # decided the pattern, with nothing stating it anywhere.
-        "syllabus": settings.SCHOOL_BOARD,
+        "syllabus": _school_board(),
         "userInfo": _user_info(teacher),
     }
     try:
@@ -289,7 +312,7 @@ async def generate_competitive_paper(req, teacher) -> dict:
         "difficulty": req.difficulty,
         "totalMarks": req.totalMarks,
         "questionType": req.questionType,
-        "syllabus": settings.SCHOOL_BOARD,
+        "syllabus": _school_board(),
         "userInfo": _user_info(teacher),
 
         # The competitive pattern. Accepted by the service and, as far as we
