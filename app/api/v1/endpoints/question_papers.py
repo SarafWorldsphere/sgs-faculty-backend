@@ -1,7 +1,8 @@
 """
 Question papers — generate with the AI, then keep the ones worth keeping.
 
-  POST   /question-papers/generate   ask the AI for a paper (not stored)
+  POST   /question-papers/generate               ask the AI for a school paper (not stored)
+  POST   /question-papers/generate-competitive   the same, for a competitive pattern
   POST   /question-papers            save a generated paper
   GET    /question-papers            the teacher's saved papers, newest first
   GET    /question-papers/{id}       one saved paper, full content
@@ -22,7 +23,7 @@ from app.api.deps import get_current_teacher
 from app.db.session import get_db
 from app.models.question_paper import TeacherQuestionPaper
 from app.models.teacher import TeacherMaster
-from app.services.ai_service import generate_question_paper
+from app.services.ai_service import generate_competitive_paper, generate_question_paper
 
 router = APIRouter(prefix="/question-papers", tags=["question-papers"])
 
@@ -38,6 +39,34 @@ class QuestionPaperRequest(BaseModel):
     difficulty: str = "Medium"
     totalMarks: int = 50
     questionType: str | None = None   # None = all question types
+
+
+class CompetitivePaperRequest(BaseModel):
+    """
+    What the Configure screen collects for a competitive paper.
+
+    Wider than QuestionPaperRequest and almost all of it optional, because the
+    screen was built against the pattern the paper should follow while the
+    generator still reads the older, narrower shape. Nothing here is required
+    beyond the marks: a competitive paper may draw on the whole syllabus, so
+    an empty chapter list is a valid answer, unlike a school test.
+    """
+    chapterId: Optional[int] = None
+    chapterIds: list[int] = []
+    difficulty: str = "Medium"
+    totalMarks: int
+    questionType: Optional[str] = None
+
+    examType: Optional[str] = None
+    examTarget: Optional[str] = None
+    classLevel: Optional[str] = None
+    subject: Optional[str] = None
+    difficultyMix: Optional[dict[str, int]] = None
+    blueprint: Optional[Any] = None
+    minutes: Optional[int] = None
+    negativeMarking: Optional[bool] = None
+    questionCount: Optional[int] = None
+    marksEach: Optional[int] = None
 
 
 class QuestionPaperSave(BaseModel):
@@ -118,6 +147,23 @@ async def generate(
         question_type=body.questionType,
         teacher=teacher,
     )
+
+
+@router.post("/generate-competitive")
+async def generate_competitive(
+    body: CompetitivePaperRequest,
+    teacher: TeacherMaster = Depends(get_current_teacher),
+):
+    """
+    A competitive paper, as opposed to a school test.
+
+    Separate from /generate because the two collect different things: a
+    school test is marked out of a fixed total and its blueprint has to reach
+    it, while a competitive paper takes its total from the pattern and may
+    ignore chapters entirely. Keeping them apart means /generate stays the
+    narrow, required-chapter call it has always been.
+    """
+    return await generate_competitive_paper(body, teacher)
 
 
 @router.post("", response_model=QuestionPaperOut, status_code=status.HTTP_201_CREATED)

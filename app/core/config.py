@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Literal
 
 
 class Settings(BaseSettings):
@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     # Host lookup for SchoolMiddleware. Points at the control database, which
     # on the shared setup is the same database as DATABASE_URL.
     SARASWATI_DATABASE_URL: str = ""
+
+    # Fallback board, used only when no school resolved for the request.
+    #
+    # The board now lives on the school itself, in the tenant config, and
+    # ai_service reads it from there — one process serves every school, and
+    # the schools on it do not share a board, so a single configured value
+    # would be wrong for one of them on every paper it generated.
+    #
+    # This stays for the single-school case and for a tenant whose config
+    # predates the key. Typed as a Literal so a misspelling in .env fails at
+    # startup rather than reaching the AI, which would quietly fall back to
+    # its own default and produce the wrong pattern with nothing on screen
+    # to show it.
+    SCHOOL_BOARD: Literal["State", "CBSE"] = "State"
 
     # One period, in minutes — the form counts periods, the AI counts minutes.
     PERIOD_MINUTES: int = 45

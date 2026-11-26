@@ -8,6 +8,29 @@ from app.core.config import settings
 
 _TIMEOUT = 60.0
 
+# State and CBSE set different question patterns, so every generation call has
+# to carry the board. One process now serves every school, and the two schools
+# on it do not share a board — SGS is CBSE, SSS follows AP SCERT — so a single
+# configured value would be wrong for one of them on every paper it generated.
+#
+# Read from the school this request resolved to, the same way schoolName is.
+# settings.SCHOOL_BOARD stays as the fallback: a single-school deployment has
+# no tenant config to read, and a tenant whose config predates this key should
+# keep working rather than send the AI something it does not understand.
+_BOARDS = ("State", "CBSE")
+
+
+def _school_board() -> str:
+    """The board for the school this request belongs to."""
+    try:
+        board = (current_school().config or {}).get("board")
+    except Exception:
+        # No school resolved — a background job, or a single-school deployment
+        # with no tenant middleware in front of it.
+        board = None
+    return board if board in _BOARDS else settings.SCHOOL_BOARD
+
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -248,7 +271,66 @@ async def generate_question_paper(
         "difficulty": difficulty,
         "totalMarks": total_marks,
         "questionType": question_type,
+        # State and CBSE set different question patterns for the same chapter.
+        # Without this the AI was never told which, and answered from the
+        # chapter text alone — whichever textbook happened to be uploaded
+        # decided the pattern, with nothing stating it anywhere.
+        "syllabus": _school_board(),
         "userInfo": _user_info(teacher),
+    }
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            r = await client.post(
+                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/question-paper",
+                json=payload,
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        _ai_error(e)
+
+
+async def generate_competitive_paper(req, teacher) -> dict:
+    """
+    A competitive paper — NMMS, an olympiad, a scholarship test.
+
+    The AI service has one paper endpoint, so this is that same call with the
+    pattern attached, not a second service. Everything the Configure screen
+    collected is forwarded: the service reads the fields it knows and ignores
+    the rest, which is what lets the screen ship ahead of the generator.
+
+    totalMarks is deliberately not checked here. The service accepts a fixed
+    set of totals and answers "Total marks must be valid." for anything else,
+    and _ai_error passes that message straight through to the teacher. One
+    rule, living in the service that owns it, rather than a copy here that
+    goes stale the day they widen it.
+    """
+    payload = {
+        # What the service reads today.
+        "chapterId": req.chapterId if req.chapterId is not None
+                     else (req.chapterIds[0] if req.chapterIds else None),
+        "difficulty": req.difficulty,
+        "totalMarks": req.totalMarks,
+        "questionType": req.questionType,
+        "syllabus": _school_board(),
+        "userInfo": _user_info(teacher),
+
+        # The competitive pattern. Accepted by the service and, as far as we
+        # can tell from the outside, ignored by it today — an unknown field
+        # does not make it complain. Sent anyway, so the papers start
+        # following the pattern the day it reads them, with nothing to change
+        # on this side.
+        "examType": req.examType,
+        "examTarget": req.examTarget,
+        "chapterIds": req.chapterIds,
+        "classLevel": req.classLevel,
+        "subject": req.subject,
+        "difficultyMix": req.difficultyMix,
+        "blueprint": req.blueprint,
+        "minutes": req.minutes,
+        "negativeMarking": req.negativeMarking,
+        "questionCount": req.questionCount,
+        "marksEach": req.marksEach,
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:

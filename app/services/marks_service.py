@@ -16,7 +16,7 @@ Two rules shape everything here:
   transaction or neither is.
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -38,6 +38,21 @@ class RollError(ValueError):
 def _roll(db: Session, class_id) -> dict[int, StudentMaster]:
     """The students a mark may be recorded against, keyed by id."""
     return {s.student_id: s for s in student_service.roll_query(db, class_id).all()}
+
+
+def roll_for(db: Session, class_id) -> dict[int, StudentMaster]:
+    """
+    The same roll, for callers outside this module.
+
+    The assessment detail view needs it to list every student in the class,
+    marked or not. Deliberately the same query that decides who a mark may be
+    saved against — if the two ever diverged, the screen would offer a student
+    whose mark could not then be stored.
+
+    Not filtered by section. The roll has always been by class alone, and
+    narrowing it here would quietly drop students from a teacher's list.
+    """
+    return _roll(db, class_id)
 
 
 def _percentage(marks, max_marks: float):
@@ -130,12 +145,22 @@ def update_marks(db: Session, assessment: Assessment, payload) -> Assessment:
 
     Only the students named in the request are touched — a teacher fixing one
     child's mark should not have to resend the whole class.
+
+    A student on the roll with no row yet is created, not refused. The detail
+    view lists the whole class so a teacher can finish a partly-entered test
+    later; if saving then rejected everyone who had been left blank, showing
+    them would be a trap rather than a help. The check is against the roll,
+    which is the question that actually matters — is this child in this class.
     """
     existing = {r.student_id: r for r in assessment.results}
+    roll = _roll(db, assessment.class_id)
 
-    strangers = [m.student_id for m in payload.marks if m.student_id not in existing]
+    strangers = [
+        m.student_id for m in payload.marks
+        if m.student_id not in existing and m.student_id not in roll
+    ]
     if strangers:
-        raise RollError(f"These students have no result on this test: {strangers}")
+        raise RollError(f"Students not on this class's roll: {strangers}")
 
     now = datetime.utcnow()
     max_marks = float(assessment.max_marks)
@@ -145,16 +170,35 @@ def update_marks(db: Session, assessment: Assessment, payload) -> Assessment:
             raise ValueError(
                 f"Marks for student {m.student_id} must be between 0 and {max_marks}"
             )
-        row = existing[m.student_id]
-        row.marks_obtained = Decimal(str(m.marks_obtained)) if m.marks_obtained is not None else None
-        row.percentage = (
+        value = Decimal(str(m.marks_obtained)) if m.marks_obtained is not None else None
+        pct = (
             Decimal(str(_percentage(m.marks_obtained, max_marks)))
             if not m.is_absent and m.marks_obtained is not None else None
         )
+
+        row = existing.get(m.student_id)
+        if row is None:
+            student = roll[m.student_id]
+            row = AssessmentResult(
+                assessment_id=assessment.assessment_id,
+                student_id=m.student_id,
+                roll_number=student.roll_no or "",
+                student_name=student.full_name or "",
+                created_at=now,
+                record_status=ACTIVE,
+                version_no=1,
+            )
+            db.add(row)
+            existing[m.student_id] = row
+
+        row.marks_obtained = value
+        row.percentage = pct
         row.is_absent = m.is_absent
         row.updated_at = now
 
+    db.flush()
     scored = [r for r in existing.values() if not r.is_absent and r.marks_obtained is not None]
+    assessment.total_students = len(existing)
     assessment.submitted = len(scored)
     assessment.class_average = (
         Decimal(str(round(sum(float(r.marks_obtained) for r in scored) / len(scored), 2)))
@@ -247,3 +291,113 @@ def exams_for_year(db: Session, academic_year: str | None = None) -> list[ExamMa
     if academic_year:
         q = q.filter(ExamMaster.academic_year == academic_year)
     return q.order_by(ExamMaster.start_date.asc().nullslast(), ExamMaster.exam_id).all()
+
+
+# ── Monthly view ─────────────────────────────────────────────────────────────
+# "All the tests conducted for a subject during the month, with student-wise
+# marks." The per-test drawer already answers "how did the class do on Friday's
+# test"; this answers "how is this child doing in Maths this month", which is
+# the question a parent meeting or a report card starts from.
+
+def _month_bounds(month: str) -> tuple[date, date]:
+    """'2026-11' -> the first of that month and the first of the next."""
+    try:
+        year, mon = (int(part) for part in month.split("-", 1))
+        start = date(year, mon, 1)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("month must be YYYY-MM") from exc
+    end = date(year + 1, 1, 1) if mon == 12 else date(year, mon + 1, 1)
+    return start, end
+
+
+def monthly_marks(
+    db: Session,
+    teacher: TeacherMaster,
+    month: str,
+    subject: str | None = None,
+    class_id=None,
+) -> tuple[list[Assessment], list[dict]]:
+    """
+    Every test this teacher ran in `month` (optionally for one subject), and
+    each student's marks across them.
+
+    Returns the assessments and a per-student list; the endpoint shapes them.
+    """
+    start, end = _month_bounds(month)
+
+    q = db.query(Assessment).filter(
+        Assessment.teacher_id == teacher.teacher_id,
+        Assessment.assessment_date >= start,
+        Assessment.assessment_date < end,
+    )
+    if subject:
+        q = q.filter(Assessment.subject.ilike(subject))
+    if class_id is not None:
+        # Same rule as the list endpoint: rows predating class_id have none and
+        # would otherwise vanish from every class.
+        q = q.filter((Assessment.class_id == class_id) | (Assessment.class_id.is_(None)))
+
+    assessments = q.order_by(Assessment.assessment_date, Assessment.assessment_id).all()
+    if not assessments:
+        return [], []
+
+    by_id = {a.assessment_id: a for a in assessments}
+
+    results = (
+        db.query(AssessmentResult)
+        .filter(AssessmentResult.assessment_id.in_(list(by_id)))
+        .all()
+    )
+
+    # roll_number and student_name are denormalised onto the result row, so the
+    # student list comes from the results themselves — no extra query, and a
+    # student who has since left still appears against the marks they earned.
+    students: dict[int, dict] = {}
+    for r in results:
+        s = students.setdefault(
+            r.student_id,
+            {
+                "student_id":  r.student_id,
+                "name":        r.student_name,
+                "roll_number": r.roll_number,
+                "marks":       [],
+                "attempted":   0,
+                "scored":      0.0,
+                "max_total":   0.0,
+            },
+        )
+        assessment = by_id[r.assessment_id]
+        marks = float(r.marks_obtained) if r.marks_obtained is not None else None
+        s["marks"].append(
+            {
+                "assessment_id":  r.assessment_id,
+                "marks_obtained": marks,
+                "percentage":     float(r.percentage) if r.percentage is not None else None,
+                "is_absent":      bool(r.is_absent),
+            }
+        )
+        # Absences and unentered marks are excluded from the total rather than
+        # counted as zero — see the schema note on why.
+        if not r.is_absent and marks is not None:
+            s["attempted"] += 1
+            s["scored"] += marks
+            s["max_total"] += float(assessment.max_marks)
+
+    rows = []
+    for s in sorted(students.values(), key=lambda x: (x["roll_number"] or "", x["name"] or "")):
+        total = s["scored"] if s["attempted"] else None
+        pct = round(s["scored"] / s["max_total"] * 100, 2) if s["max_total"] else None
+        rows.append(
+            {
+                "student_id":  s["student_id"],
+                "name":        s["name"],
+                "roll_number": s["roll_number"],
+                "marks":       s["marks"],
+                "attempted":   s["attempted"],
+                "total":       total,
+                "max_total":   s["max_total"],
+                "percentage":  pct,
+            }
+        )
+
+    return assessments, rows
