@@ -24,6 +24,7 @@ router = APIRouter(prefix="/lesson-plans", tags=["lesson-plans"])
 async def generate(
     body: LessonPlanGenerateRequest,
     teacher: TeacherMaster = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
 ):
     """Call the AI service and return a structured lesson plan."""
     if not body.chapter:
@@ -31,7 +32,9 @@ async def generate(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="topic is required",
         )
-    return await generate_lesson_plan(body, teacher)
+    # db is for the header's class name only — class_id alone printed as
+    # "Class 32 A", the row number rather than the class.
+    return await generate_lesson_plan(body, teacher, db)
 
 
 @router.get("", response_model=LessonPlanListResponse)
