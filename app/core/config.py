@@ -16,7 +16,16 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = "http://localhost:3000"
 
-    AI_SERVICE_URL: str = "http://16.112.236.67:7007"
+    # The SSS Faculty AI service. It serves /api/faculty/* on port 7000; the
+    # old service at 16.112.236.67:7007 served /api/v1/ai/teacher/* and is
+    # gone. Both the port and the path prefix changed, so an old value here
+    # fails as a refused connection rather than a 404.
+    AI_SERVICE_URL: str = "http://localhost:7000"
+
+    # Sent as `client_name` on every AI call; the service logs token usage
+    # against it. A tenant overrides it with an `aiClientName` key in its
+    # config — see _client_name() in app/services/ai_service.py.
+    AI_CLIENT_NAME: str = "SSS"
 
     # SCHOOL_NAME was here. The masthead now reads the school this request
     # resolved to (current_school().config), because one process serves every
