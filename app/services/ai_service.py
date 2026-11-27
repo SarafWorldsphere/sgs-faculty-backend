@@ -453,6 +453,7 @@ async def scan_answer_sheets(
     answer_sheets: list[tuple[str, bytes, str]],
     teacher,
     mode: str = "direct_grade",
+    question_paper_file: tuple[str, bytes, str] | None = None,
     question_paper_json: str | None = None,
     rubric_or_answer_key: str | None = None,
     subject: str | None = None,
@@ -470,8 +471,19 @@ async def scan_answer_sheets(
 
     Scanning a whole paper takes far longer than a single answer, so this call
     gets its own timeout rather than the service-wide one.
+
+    `question_paper_file` is the official paper, scanned or digital. It is sent
+    as a file rather than only as question_paper_json because the JSON is
+    produced by a *text* extractor: a photographed or scanned question paper
+    yields nothing from it, and then the marker has no reference at all. It
+    also tells the marker how the questions are numbered — an answer sheet
+    written as "Section B, 1, 2" has to be matched to questions 3 and 4 of the
+    paper, and without the paper those numbers collide.
     """
     files = [("answer_sheets", (name, blob, ctype)) for name, blob, ctype in answer_sheets]
+    if question_paper_file is not None:
+        name, blob, ctype = question_paper_file
+        files.append(("question_paper_file", (name, blob, ctype)))
 
     data = {"mode": mode, **_caller(teacher)}
     for key, value in (
@@ -494,7 +506,26 @@ async def scan_answer_sheets(
                 files=files,
             )
             r.raise_for_status()
-            return r.json()
+            body = r.json()
+
+            # The service wraps the whole result in `evaluation`, with only
+            # `status` beside it:
+            #
+            #   {"status": "success",
+            #    "evaluation": {"student_details": …, "summary": …,
+            #                   "questions": [...]}}
+            #
+            # The field names inside are the ones the screen reads; it was the
+            # extra level that broke it. Returned flat so callers see
+            # student_details / summary / questions at the top, which is what
+            # the integration note asks the gateway to do.
+            #
+            # Falls back to the body itself rather than assuming the wrapper:
+            # the service declares this response as untyped `{}` in its
+            # OpenAPI, so nothing but this code would catch the shape changing
+            # back.
+            evaluation = body.get("evaluation") if isinstance(body, dict) else None
+            return evaluation if isinstance(evaluation, dict) and evaluation else body
     except Exception as e:
         _ai_error(e)
 
@@ -618,15 +649,19 @@ async def class_analytics(subject: str, teacher) -> dict:
 
 
 async def translate_text(text: str, target_language: str, teacher) -> dict:
+    # Was /api/v1/ai/teacher/translate, which 404s: that whole prefix belonged
+    # to the old service and is gone. The live route also renames the field —
+    # target_language, not targetLanguage — and takes the caller as two flat
+    # fields instead of a userInfo object.
     payload = {
         "text": text,
-        "targetLanguage": target_language,
-        "userInfo": _user_info(teacher),
+        "target_language": target_language,
+        **_caller(teacher),
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/translate",
+                f"{settings.AI_SERVICE_URL}/api/faculty/translate",
                 json=payload,
             )
             r.raise_for_status()
