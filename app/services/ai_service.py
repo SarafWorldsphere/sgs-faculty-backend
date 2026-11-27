@@ -8,6 +8,10 @@ from app.core.config import settings
 
 _TIMEOUT = 60.0
 
+# Reading a stack of scanned sheets, or planning a whole subject's year, both
+# run well past a single answer's worth of work.
+_SCAN_TIMEOUT = 300.0
+
 # State and CBSE set different question patterns, so every generation call has
 # to carry the board. One process now serves every school, and the two schools
 # on it do not share a board — SGS is CBSE, SSS follows AP SCERT — so a single
@@ -41,6 +45,41 @@ def _user_info(teacher) -> dict:
         "email": teacher.email_id or "",
         "role": "Teacher",
     }
+
+
+def _client_name() -> str:
+    """
+    The `client_name` the AI service logs token usage against.
+
+    One process serves several schools, so this is read from the school the
+    request resolved to and not from .env. A tenant that has not been given an
+    `aiClientName` falls back to the configured default.
+    """
+    try:
+        name = (current_school().config or {}).get("aiClientName")
+    except Exception:
+        # No school resolved — a background job, or a single-school
+        # deployment with no tenant middleware in front of it.
+        name = None
+    return name or settings.AI_CLIENT_NAME
+
+
+def _caller(teacher) -> dict:
+    """
+    The two fields every /api/faculty/* endpoint expects.
+
+    `user_email` is required by the service on every call — it is what token
+    usage is billed against, so a teacher with no email on their record would
+    be rejected with a 422 that says nothing useful. Fail here instead.
+    """
+    email = (teacher.email_id or "").strip()
+    if not email:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This teacher record has no email address, and the AI service "
+            "requires one. Add an email to the teacher before using AI features.",
+        )
+    return {"user_email": email, "client_name": _client_name()}
 
 
 def _ai_error(e: Exception):
@@ -230,58 +269,97 @@ async def generate_lesson_plan(req, teacher) -> dict:
         return v or "Not specified"
 
     payload = {
-        "chapterId": req.chapterId,
+        # Required by the service.
         "topic": req.chapter,
-        "noOfPeriods": req.noOfPeriods,
-        # Kept for the AI service's current handler, which still reads it.
-        "durationMinutes": req.noOfPeriods * settings.PERIOD_MINUTES,
-        "classLevel": _or_unspecified(level),
-        "section": _or_unspecified(section),
+        "grade_level": _or_unspecified(level),
+        # Optional, but each one it does not get prints "Not specified" on the
+        # plan, so send everything the teacher record or the form can supply.
+        "syllabus": _school_board(),
         "subject": _or_unspecified(header["subject"]),
+        "teacher_name": header["teacher_name"],
         "designation": _or_unspecified(header["designation"]),
-        "dateOfCommencement": _or_unspecified(header["date_of_commencement"]),
-        "expectedCompletion": _or_unspecified(header["expected_completion"]),
-        "actualCompletion": "",
-        "userInfo": _user_info(teacher),
+        "section": _or_unspecified(section),
+        "no_of_periods": str(req.noOfPeriods or ""),
+        "date_of_commencement": _or_unspecified(header["date_of_commencement"]),
+        "expected_completion": _or_unspecified(header["expected_completion"]),
+        # Filled in after the lesson is taught, via PATCH — never at generation.
+        "actual_completion": "",
+        **_caller(teacher),
     }
 
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/lesson-plan",
+                f"{settings.AI_SERVICE_URL}/api/faculty/generate-material",
                 json=payload,
             )
             r.raise_for_status()
             data = r.json()
-            raw_text = data.get("lessonPlan", "")
+            # The plan body arrives under response.teaching_material. The older
+            # service returned it as `lessonPlan`; both are read so a rollback
+            # of the AI service does not take this endpoint down with it.
+            raw_text = (
+                (data.get("response") or {}).get("teaching_material")
+                or data.get("teaching_material")
+                or data.get("lessonPlan")
+                or ""
+            )
             return _parse_lesson_plan(raw_text, header, teacher)
     except Exception as e:
         _ai_error(e)
 
 
+# The service names the question mix it understands; anything else makes it
+# fall back to a mixed paper silently, which looks like the filter was ignored.
+_FORMAT_TYPES = ("all", "mcq", "true_false", "short", "fill")
+
+
+def _format_type(question_type: str | None) -> str:
+    if not question_type:
+        return "all"
+    key = question_type.strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "multiple_choice": "mcq",
+        "mcqs": "mcq",
+        "truefalse": "true_false",
+        "fill_in_the_blanks": "fill",
+        "fill_in_blank": "fill",
+        "short_answer": "short",
+    }
+    key = aliases.get(key, key)
+    return key if key in _FORMAT_TYPES else "all"
+
+
 async def generate_question_paper(
-    chapter_id: int,
+    topics: list[str],
     difficulty: str,
     total_marks: int,
     teacher,
     question_type: str | None = None,
 ) -> dict:
+    """
+    `topics` are chapter *names*, not ids.
+
+    The service scopes generation to the topics it is given, so the caller
+    resolves ids to names first. It used to take a single chapterId, which is
+    why a paper spanning several chapters could only ever send the first one.
+    """
     payload = {
-        "chapterId": chapter_id,
+        "topics": topics,
         "difficulty": difficulty,
-        "totalMarks": total_marks,
-        "questionType": question_type,
+        "total_marks": total_marks,
+        "format_type": _format_type(question_type),
         # State and CBSE set different question patterns for the same chapter.
         # Without this the AI was never told which, and answered from the
         # chapter text alone — whichever textbook happened to be uploaded
         # decided the pattern, with nothing stating it anywhere.
         "syllabus": _school_board(),
-        "userInfo": _user_info(teacher),
+        **_caller(teacher),
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/question-paper",
+                f"{settings.AI_SERVICE_URL}/api/faculty/generate-exam",
                 json=payload,
             )
             r.raise_for_status()
@@ -351,17 +429,105 @@ async def correct_answer(
     rubric: str,
     teacher,
 ) -> dict:
+    # The service takes no max_marks on this endpoint — the ceiling belongs in
+    # the rubric, so it is stated there when the caller did not write one.
     payload = {
         "question": question,
-        "studentAnswer": student_answer,
-        "maxMarks": max_marks,
-        "rubric": rubric,
-        "userInfo": _user_info(teacher),
+        "student_answer": student_answer,
+        "rubric": rubric or f"Mark out of {max_marks}.",
+        **_caller(teacher),
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/correct-answer",
+                f"{settings.AI_SERVICE_URL}/api/faculty/auto-correct",
+                json=payload,
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        _ai_error(e)
+
+
+async def scan_answer_sheets(
+    answer_sheets: list[tuple[str, bytes, str]],
+    teacher,
+    mode: str = "direct_grade",
+    question_paper_json: str | None = None,
+    rubric_or_answer_key: str | None = None,
+    subject: str | None = None,
+    class_level: str | None = None,
+    max_marks: int | None = None,
+    student_name: str | None = None,
+    roll_number: str | None = None,
+) -> dict:
+    """
+    Read and mark scanned answer sheets.
+
+    `answer_sheets` is a list of (filename, content, content_type). This
+    endpoint is multipart/form-data, not JSON like the rest of the service —
+    the sheets are uploaded files.
+
+    Scanning a whole paper takes far longer than a single answer, so this call
+    gets its own timeout rather than the service-wide one.
+    """
+    files = [("answer_sheets", (name, blob, ctype)) for name, blob, ctype in answer_sheets]
+
+    data = {"mode": mode, **_caller(teacher)}
+    for key, value in (
+        ("question_paper_json", question_paper_json),
+        ("rubric_or_answer_key", rubric_or_answer_key),
+        ("subject", subject),
+        ("class_level", class_level),
+        ("max_marks", max_marks),
+        ("student_name", student_name),
+        ("roll_number", roll_number),
+    ):
+        if value is not None and value != "":
+            data[key] = str(value)
+
+    try:
+        async with httpx.AsyncClient(timeout=_SCAN_TIMEOUT) as client:
+            r = await client.post(
+                f"{settings.AI_SERVICE_URL}/api/faculty/auto-correct/scan",
+                data=data,
+                files=files,
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        _ai_error(e)
+
+
+async def academic_planner(
+    grade_level: str,
+    subject: str,
+    teacher,
+    chapters: list[str] | None = None,
+    total_chapters: int | None = None,
+    academic_year: str | None = None,
+    total_teaching_periods: int | None = None,
+) -> dict:
+    """A subject's chapters mapped onto the four-exam academic calendar."""
+    payload = {
+        "grade_level": grade_level,
+        "subject": subject,
+        "syllabus": _school_board(),
+        **_caller(teacher),
+    }
+    if chapters:
+        payload["chapters"] = chapters
+    if total_chapters is not None:
+        payload["total_chapters"] = total_chapters
+    if academic_year:
+        payload["academic_year"] = academic_year
+    if total_teaching_periods is not None:
+        payload["total_teaching_periods"] = total_teaching_periods
+
+    try:
+        async with httpx.AsyncClient(timeout=_SCAN_TIMEOUT) as client:
+            r = await client.post(
+                f"{settings.AI_SERVICE_URL}/api/faculty/academic-planner",
                 json=payload,
             )
             r.raise_for_status()
