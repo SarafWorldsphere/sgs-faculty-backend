@@ -54,6 +54,14 @@ def _chapter_names(db: Session, chapter_ids: list[int]) -> list[str]:
 
 # ── schemas ───────────────────────────────────────────────────────────────────
 
+class BlueprintRow(BaseModel):
+    """One section of the paper: how many questions of a type, and the marks each."""
+
+    id: str
+    count: int = 0
+    each: float = 0
+
+
 class QuestionPaperRequest(BaseModel):
     """
     What the Auto Test screen collects.
@@ -71,12 +79,21 @@ class QuestionPaperRequest(BaseModel):
     difficulty: str = "Medium"
     totalMarks: int = 50
     questionType: str | None = None   # None = all question types
+    # The Configure screen has always sent this and the schema never declared
+    # it, so Pydantic dropped it on the way in and the paper's shape was lost
+    # between the two. It is how many questions the teacher asked for.
+    blueprint: list[BlueprintRow] = []
 
     def selected_chapter_ids(self) -> list[int]:
         ids = list(self.chapterIds) if self.chapterIds else []
         if self.chapterId is not None and self.chapterId not in ids:
             ids.insert(0, self.chapterId)
         return ids
+
+    def question_count(self) -> int | None:
+        """How many questions the blueprint asks for, or None if it is silent."""
+        total = sum(row.count for row in self.blueprint if row.count > 0)
+        return total or None
 
 
 class CompetitivePaperRequest(BaseModel):
@@ -206,6 +223,7 @@ async def generate(
         difficulty=body.difficulty,
         total_marks=body.totalMarks,
         question_type=body.questionType,
+        num_questions=body.question_count(),
         teacher=teacher,
     )
 
