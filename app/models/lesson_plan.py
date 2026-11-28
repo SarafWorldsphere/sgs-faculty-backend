@@ -5,12 +5,12 @@ from app.db.session import Base
 
 
 class TeacherLessonPlan(Base):
-    __tablename__ = "sgs_teacher_lesson_plans"
+    __tablename__ = "teacher_lesson_plans"
 
     lesson_plan_id = Column(BigInteger, primary_key=True, autoincrement=True)
     teacher_id     = Column(
         BigInteger,
-        ForeignKey("sgs_teacher_master.teacher_id", ondelete="CASCADE"),
+        ForeignKey("teacher_master.teacher_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )

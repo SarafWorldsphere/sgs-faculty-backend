@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_teacher
 from app.db.session import get_db
+from app.models.chapter_master import ChapterMaster
 from app.models.question_paper import TeacherQuestionPaper
 from app.models.teacher import TeacherMaster
 from app.services.ai_service import generate_competitive_paper, generate_question_paper
@@ -32,13 +33,67 @@ _LIVE = or_(TeacherQuestionPaper.record_status.is_(None),
             TeacherQuestionPaper.record_status != DELETED)
 
 
+def _chapter_names(db: Session, chapter_ids: list[int]) -> list[str]:
+    """
+    Chapter names for the ids given, in the order the teacher picked them.
+
+    Ids that do not resolve are dropped rather than raising: RLS already
+    confines this to the caller's school, so an id from elsewhere is simply
+    not a chapter here. The caller decides what an empty result means.
+    """
+    rows = (
+        db.query(ChapterMaster.chapter_id, ChapterMaster.chapter_name)
+        .filter(ChapterMaster.chapter_id.in_(chapter_ids))
+        .filter(or_(ChapterMaster.record_status.is_(None),
+                    ChapterMaster.record_status != DELETED))
+        .all()
+    )
+    by_id = {row.chapter_id: (row.chapter_name or "").strip() for row in rows}
+    return [by_id[cid] for cid in chapter_ids if by_id.get(cid)]
+
+
 # ── schemas ───────────────────────────────────────────────────────────────────
 
+class BlueprintRow(BaseModel):
+    """One section of the paper: how many questions of a type, and the marks each."""
+
+    id: str
+    count: int = 0
+    each: float = 0
+
+
 class QuestionPaperRequest(BaseModel):
-    chapterId: int
+    """
+    What the Auto Test screen collects.
+
+    chapterId is optional and kept only for callers that still send a single
+    chapter. The screen sends chapterIds, and the generator now scopes a paper
+    to every chapter it is given rather than the first one.
+
+    Neither is required by the schema on purpose: an empty selection is a
+    mistake the teacher can fix, and it should read as one rather than as the
+    422 a required field produces before the handler ever runs.
+    """
+    chapterId: int | None = None
+    chapterIds: list[int] = []
     difficulty: str = "Medium"
     totalMarks: int = 50
     questionType: str | None = None   # None = all question types
+    # The Configure screen has always sent this and the schema never declared
+    # it, so Pydantic dropped it on the way in and the paper's shape was lost
+    # between the two. It is how many questions the teacher asked for.
+    blueprint: list[BlueprintRow] = []
+
+    def selected_chapter_ids(self) -> list[int]:
+        ids = list(self.chapterIds) if self.chapterIds else []
+        if self.chapterId is not None and self.chapterId not in ids:
+            ids.insert(0, self.chapterId)
+        return ids
+
+    def question_count(self) -> int | None:
+        """How many questions the blueprint asks for, or None if it is silent."""
+        total = sum(row.count for row in self.blueprint if row.count > 0)
+        return total or None
 
 
 class CompetitivePaperRequest(BaseModel):
@@ -139,12 +194,36 @@ def _mine(db: Session, teacher_id: int, paper_id: int) -> TeacherQuestionPaper |
 async def generate(
     body: QuestionPaperRequest,
     teacher: TeacherMaster = Depends(get_current_teacher),
+    db: Session = Depends(get_db),
 ):
+    """
+    The AI service scopes a paper to topic *names*, so the ids the screen
+    sends are resolved here. Chapters are tenant-scoped by RLS, so an id
+    belonging to another school simply does not resolve — which is the right
+    answer, and says so plainly instead of generating from nothing.
+    """
+    chapter_ids = body.selected_chapter_ids()
+    if not chapter_ids:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Choose at least one chapter before generating a paper.",
+        )
+
+    topics = _chapter_names(db, chapter_ids)
+    if not topics:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Those chapters are not in this school's syllabus. Pick them "
+            "again from the list — a saved selection can outlive the chapter "
+            "it pointed at.",
+        )
+
     return await generate_question_paper(
-        chapter_id=body.chapterId,
+        topics=topics,
         difficulty=body.difficulty,
         total_marks=body.totalMarks,
         question_type=body.questionType,
+        num_questions=body.question_count(),
         teacher=teacher,
     )
 

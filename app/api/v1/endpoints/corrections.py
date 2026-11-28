@@ -1,7 +1,7 @@
 from datetime import date
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,7 @@ from app.models.assessment import Assessment, AssessmentType
 from app.models.teacher import TeacherMaster
 from app.schemas.assessment import MarksEntryRequest, StudentMarkIn
 from app.services import marks_service
-from app.services.ai_service import correct_answer
+from app.services.ai_service import correct_answer, scan_answer_sheets
 
 router = APIRouter(prefix="/corrections", tags=["corrections"])
 
@@ -37,11 +37,103 @@ async def check(
     )
 
 
+# Guards the upload before it reaches the AI service: a scan is slow and
+# billed, so a wrong file type should fail here rather than after the wait.
+_SCAN_TYPES = {"application/pdf", "image/jpeg", "image/png", "image/webp", "image/heic"}
+_SCAN_MAX_BYTES = 25 * 1024 * 1024
+_SCAN_MAX_SHEETS = 40
+
+
+async def _read_upload(upload: UploadFile, what: str) -> tuple[str, bytes, str]:
+    """Check one uploaded file and read it, or say plainly what is wrong."""
+    content_type = upload.content_type or "application/octet-stream"
+    if content_type not in _SCAN_TYPES:
+        raise HTTPException(
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            f"{upload.filename or what} is a {content_type}. "
+            "Upload it as PDF or as an image.",
+        )
+    blob = await upload.read()
+    if not blob:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"{upload.filename or what} is empty.",
+        )
+    if len(blob) > _SCAN_MAX_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"{upload.filename or what} is larger than "
+            f"{_SCAN_MAX_BYTES // (1024 * 1024)}MB.",
+        )
+    return (upload.filename or what, blob, content_type)
+
+
+@router.post("/scan")
+async def scan(
+    answer_sheets: list[UploadFile] = File(...),
+    mode: str = Form("direct_grade"),
+    # The question paper itself, not just the text pulled out of it. The JSON
+    # comes from /questions/extract, which reads text — a scanned or
+    # photographed paper gives it nothing, and the marker is then reading
+    # answers with no idea what was asked.
+    question_paper_file: Optional[UploadFile] = File(None),
+    question_paper_json: Optional[str] = Form(None),
+    rubric_or_answer_key: Optional[str] = Form(None),
+    subject: Optional[str] = Form(None),
+    class_level: Optional[str] = Form(None),
+    max_marks: Optional[int] = Form(None),
+    student_name: Optional[str] = Form(None),
+    roll_number: Optional[str] = Form(None),
+    teacher: TeacherMaster = Depends(get_current_teacher),
+):
+    """
+    Read scanned answer sheets and return the marks the scanner worked out.
+
+    The browser never reaches the AI service directly — there is no route to
+    it from outside — so the sheets come here and this forwards them.
+    """
+    if not answer_sheets:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No answer sheets were uploaded.")
+    if len(answer_sheets) > _SCAN_MAX_SHEETS:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Too many sheets in one scan — {len(answer_sheets)} sent, "
+            f"{_SCAN_MAX_SHEETS} is the most per request.",
+        )
+
+    sheets = [await _read_upload(upload, "An answer sheet") for upload in answer_sheets]
+
+    # An empty file input still arrives as an UploadFile with no filename, so
+    # "was a paper attached?" is a question about the filename, not about None.
+    paper = None
+    if question_paper_file is not None and question_paper_file.filename:
+        paper = await _read_upload(question_paper_file, "The question paper")
+
+    return await scan_answer_sheets(
+        answer_sheets=sheets,
+        teacher=teacher,
+        mode=mode,
+        question_paper_file=paper,
+        question_paper_json=question_paper_json,
+        rubric_or_answer_key=rubric_or_answer_key,
+        subject=subject,
+        class_level=class_level,
+        max_marks=max_marks,
+        student_name=student_name,
+        roll_number=roll_number,
+    )
+
+
 class CorrectedPaper(BaseModel):
     """One student's marked paper, as the auto-correct screen finished it."""
 
     title: str
     subject: Optional[str] = None
+    # What kind of test this was. Marks typed in by hand have carried this
+    # since marks entry was built; a corrected paper did not, so every one of
+    # them was filed as a class test regardless of what the teacher had
+    # actually marked. The reports group on it, so an exam counted as a test.
+    assessment_type: AssessmentType = AssessmentType.test
     assessment_date: Optional[date] = None
     student_id: int
     marks_obtained: float
@@ -101,7 +193,7 @@ def save_corrected_paper(
             subject=body.subject,
             assessment_date=body.assessment_date or date.today(),
             max_marks=body.max_marks,
-            assessment_type=AssessmentType.test,
+            assessment_type=body.assessment_type,
             marks=[mark],
         )
         try:

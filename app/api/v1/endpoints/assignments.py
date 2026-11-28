@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -57,3 +57,40 @@ def assignment_students(
     if result is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Assignment not found")
     return result
+
+
+@router.get("/{assignment_id}/students/{student_id}/file")
+def submitted_file(
+    assignment_id: int,
+    student_id: int,
+    class_id: Optional[int] = Depends(get_active_class_id),
+    db: Session = Depends(get_db),
+):
+    """
+    Open what a student handed in.
+
+    The submission list already reports a filename and a size, so the screen
+    shows that a file exists — but nothing ever served the bytes, and the
+    teacher had no way to read the work they were marking. The content is
+    stored in assignment_results.submitted_file_content.
+
+    `inline` so a PDF or an image opens in the browser rather than landing in
+    the downloads folder; the filename is still offered for saving.
+    """
+    found = assignment_service.get_submitted_file(
+        db, class_id, assignment_id, student_id
+    )
+    if found is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No file has been submitted for this student.",
+        )
+    content, name, ctype = found
+    # Quote the filename: a space or a comma in it otherwise truncates the
+    # header and the browser saves the file under a mangled name.
+    safe = name.replace('"', "")
+    return Response(
+        content=content,
+        media_type=ctype,
+        headers={"Content-Disposition": f'inline; filename="{safe}"'},
+    )
