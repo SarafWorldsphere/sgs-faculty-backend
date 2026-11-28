@@ -1,3 +1,4 @@
+import base64
 import json
 import re
 import httpx
@@ -646,32 +647,57 @@ async def academic_planner(
         _ai_error(e)
 
 
-async def get_assignment_reminders(teacher) -> dict:
-    payload = {"userInfo": _user_info(teacher)}
+def _with_message(body) -> dict:
+    """Surface the alert wording under `message`, whatever key it arrived in."""
+    if not isinstance(body, dict):
+        return {"message": str(body)}
+    for key in ("alert_message", "message", "alert", "text", "content"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return {**body, "message": value}
+    return body
+
+
+async def _alert(alert_type: str, details: dict, teacher) -> dict:
+    """
+    One alert, written by the AI service from facts we supply.
+
+    Was two endpoints, /api/v1/ai/teacher/assignment-reminders and
+    /completion-alerts, both of which 404. The replacement is a single
+    /api/faculty/alerts taking an `alert_type` and a `details` object — and
+    `details` is the point: the old pair were sent nothing but the teacher's
+    name, so whatever they wrote was invented. The caller gathers the real
+    assignment figures first.
+
+    `alert_type` is free text on their side — an unknown value is accepted and
+    fed to the model rather than rejected — so the two values used here are
+    descriptive rather than from a fixed list.
+    """
+    payload = {
+        "alert_type": alert_type,
+        "details": details,
+        **_caller(teacher),
+    }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/assignment-reminders",
+                f"{settings.AI_SERVICE_URL}/api/faculty/alerts",
                 json=payload,
             )
             r.raise_for_status()
-            return r.json()
+            return _with_message(r.json())
     except Exception as e:
         _ai_error(e)
 
 
-async def get_completion_alerts(teacher) -> dict:
-    payload = {"userInfo": _user_info(teacher)}
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/completion-alerts",
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
-    except Exception as e:
-        _ai_error(e)
+async def get_assignment_reminders(teacher, details: dict | None = None) -> dict:
+    """Work that is due — a nudge for the class."""
+    return await _alert("assignment_reminder", details or {}, teacher)
+
+
+async def get_completion_alerts(teacher, details: dict | None = None) -> dict:
+    """Work that was set but not handed in."""
+    return await _alert("completion_alert", details or {}, teacher)
 
 
 async def virtual_slate(raw_text: str, action: str, teacher) -> dict:
@@ -692,37 +718,92 @@ async def virtual_slate(raw_text: str, action: str, teacher) -> dict:
         _ai_error(e)
 
 
-async def student_analytics(student_name: str, subject: str, teacher) -> dict:
+def _as_analysis(body) -> dict:
+    """
+    Give the Reports screen the `analysis` field it reads.
+
+    It renders `data.analysis || data.message || JSON.stringify(data)`, so an
+    answer under any other key is printed to the teacher as raw JSON. The
+    service's own wording is kept intact underneath.
+    """
+    if not isinstance(body, dict):
+        return {"analysis": str(body)}
+    if isinstance(body.get("analysis"), str) and body["analysis"].strip():
+        return body
+
+    # /api/faculty/assess answers with a structured report, not prose:
+    # {scope, overall_score, strengths[], weaknesses[], recommendation}.
+    # The screen prints a string, so render it — and keep the structure in
+    # place underneath for a richer panel later.
+    report = body.get("assessment_report")
+    if isinstance(report, dict):
+        rendered = _render_report(report)
+        if rendered:
+            return {**body, "analysis": rendered}
+
+    for key in ("assessment_report", "assessment", "result", "summary",
+                "message", "text", "content"):
+        value = body.get(key)
+        if isinstance(value, str) and value.strip():
+            return {**body, "analysis": value}
+    return body
+
+
+def _render_report(report: dict) -> str:
+    """The assess report as something a teacher can read."""
+    lines: list[str] = []
+
+    scope = report.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        lines.append(scope.strip())
+
+    score = report.get("overall_score")
+    if isinstance(score, (int, float)):
+        lines.append(f"Overall: {score}%")
+
+    for key, heading in (("strengths", "Strengths"),
+                         ("weaknesses", "Needs work")):
+        value = report.get(key)
+        items = value if isinstance(value, list) else ([value] if isinstance(value, str) else [])
+        items = [str(i).strip() for i in items if str(i).strip()]
+        if items:
+            lines.append("")
+            lines.append(f"{heading}:")
+            lines.extend(f"• {i}" for i in items)
+
+    recommendation = report.get("recommendation")
+    if isinstance(recommendation, str) and recommendation.strip():
+        lines.append("")
+        lines.append(f"Recommendation: {recommendation.strip()}")
+
+    return "\n".join(lines).strip()
+
+
+async def assess_performance(scope_description: str, performance_data: dict,
+                             teacher) -> dict:
+    """
+    Ask the AI service to read a set of marks.
+
+    Was two endpoints, /api/v1/ai/teacher/student-analytics and
+    /class-analytics, both of which 404 — that prefix is gone. There is no
+    analytics endpoint on the new contract at all; /api/faculty/assess is the
+    nearest thing, and it differs in the way that matters: it wants the marks
+    sent to it. The AI service cannot reach this database, so the caller
+    gathers them first (see performance_service).
+    """
     payload = {
-        "studentName": student_name,
-        "subject": subject,
-        "userInfo": _user_info(teacher),
+        "scope_description": scope_description,
+        "performance_data": performance_data,
+        **_caller(teacher),
     }
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/student-analytics",
+                f"{settings.AI_SERVICE_URL}/api/faculty/assess",
                 json=payload,
             )
             r.raise_for_status()
-            return r.json()
-    except Exception as e:
-        _ai_error(e)
-
-
-async def class_analytics(subject: str, teacher) -> dict:
-    payload = {
-        "subject": subject,
-        "userInfo": _user_info(teacher),
-    }
-    try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-            r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/class-analytics",
-                json=payload,
-            )
-            r.raise_for_status()
-            return r.json()
+            return _as_analysis(r.json())
     except Exception as e:
         _ai_error(e)
 
@@ -749,38 +830,107 @@ async def translate_text(text: str, target_language: str, teacher) -> dict:
         _ai_error(e)
 
 
-async def translate_audio(audio_file: str, target_language: str, teacher) -> dict:
-    payload = {
-        "audioFile": audio_file,
-        "targetLanguage": target_language,
-        "userInfo": _user_info(teacher),
-    }
+async def translate_audio(audio_file: str, target_language: str, teacher,
+                          source_language: str | None = None) -> dict:
+    """
+    Translate a recording into another language.
+
+    Was /api/v1/ai/teacher/audio-translate, which 404s. The replacement,
+    /api/faculty/audio-translator, is multipart and names the field `file`,
+    so the base64 the screen sends is decoded here and posted as one.
+    """
+    blob = _decode_audio(audio_file, "recording")
+    data = {"target_language": target_language, **_caller(teacher)}
+    if source_language:
+        data["source_language"] = source_language
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/audio-translate",
-                json=payload,
+                f"{settings.AI_SERVICE_URL}/api/faculty/audio-translator",
+                data=data,
+                files={"file": ("recording.webm", blob, "audio/webm")},
             )
             r.raise_for_status()
-            return r.json()
+            return _with_text(r.json())
     except Exception as e:
         _ai_error(e)
 
 
+def _decode_audio(audio_file: str, what: str) -> bytes:
+    """
+    The recording, from whatever the browser put in the JSON field.
+
+    The microphone records to a Blob and the screen sends it base64 encoded,
+    sometimes as a bare string and sometimes as a full data: URI. Both are
+    accepted here so the screens do not have to change.
+    """
+    if not audio_file:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"No {what} was sent.")
+    blob = audio_file.strip()
+    if blob.startswith("data:"):
+        _, _, blob = blob.partition(",")
+    try:
+        return base64.b64decode(blob, validate=False)
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"That {what} could not be read — it is not valid base64 audio.",
+        )
+
+
+_TEXT_KEYS = ("text", "transcript", "transcription", "translated_text",
+              "original_text", "result", "content")
+
+
+def _with_text(body) -> dict:
+    """
+    Give the screens the `text` field they read.
+
+    The two audio endpoints answer differently: voice-to-text returns
+    `transcription` at the top level, audio-translator nests `translated_text`
+    and `audio_base64` inside `data`. Both are flattened here so a screen does
+    not have to know which it called. Nothing is dropped — the original keys
+    stay, and a nested `data` is lifted alongside them.
+    """
+    if not isinstance(body, dict):
+        return {"text": str(body)}
+
+    flat = dict(body)
+    inner = body.get("data")
+    if isinstance(inner, dict):
+        # The outer keys win: only fill in what the envelope did not carry.
+        flat = {**inner, **flat}
+
+    for key in _TEXT_KEYS:
+        value = flat.get(key)
+        if isinstance(value, str) and value.strip():
+            return {**flat, "text": value}
+    return flat
+
+
 async def speech_to_text(audio_file: str, language: str, teacher) -> dict:
-    payload = {
-        "audioFile": audio_file,
-        "language": language,
-        "userInfo": _user_info(teacher),
-    }
+    """
+    Turn a recording into text.
+
+    Was /api/v1/ai/teacher/speech-to-text, which 404s. The replacement,
+    /api/faculty/voice-to-text, takes the recording as a real multipart
+    upload rather than base64 inside JSON — so the string the microphone
+    produced is decoded here and posted as a file. The screens keep sending
+    what they always sent.
+    """
+    blob = _decode_audio(audio_file, "recording")
+    data = {**_caller(teacher)}
+    if language:
+        data["language"] = language
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             r = await client.post(
-                f"{settings.AI_SERVICE_URL}/api/v1/ai/teacher/speech-to-text",
-                json=payload,
+                f"{settings.AI_SERVICE_URL}/api/faculty/voice-to-text",
+                data=data,
+                files={"file": ("recording.webm", blob, "audio/webm")},
             )
             r.raise_for_status()
-            return r.json()
+            return _with_text(r.json())
     except Exception as e:
         _ai_error(e)
 
@@ -792,12 +942,12 @@ async def text_to_speech(text: str, language: str, voice: str, teacher) -> dict:
     Was /api/v1/ai/teacher/speak, which 404s — that whole prefix is gone.
 
     `voice` is still accepted from the screen but is not forwarded: the
-    /api/faculty/text-to-voice contract has no voice field, so the service
-    picks its own. Sending it anyway would be rejected as an unknown field on
-    a schema that validates strictly. The parameter is kept rather than
-    removed so the screen's Male/Female choice keeps working as a no-op
-    instead of becoming a 422, and so it is one line to forward again if a
-    voice field is added.
+    /api/faculty/text-to-voice contract has no voice field. Sending it anyway
+    is tolerated — the service answers 200 and ignores it — so this is about
+    not implying a choice that has no effect rather than about avoiding a 422.
+    The parameter is kept rather than removed so the screen's Male/Female
+    control keeps working as a no-op, and so it is one line to forward again
+    if a voice field is added.
     """
     payload = {
         "text": text,

@@ -11,7 +11,7 @@ assignments by joining results on student_id rather than guessing from class_id.
 
 from datetime import datetime
 from typing import List
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.models.assignment import AssignmentMaster, AssignmentResult
@@ -174,6 +174,49 @@ def create_assignment(
     db.commit()
     db.refresh(a)
     return _to_out(db, a)
+
+
+def get_submitted_file(db: Session, class_id, assignment_id: int,
+                       student_id: int) -> tuple[bytes, str, str] | None:
+    """
+    One student's handed-in file: (content, filename, content type).
+
+    The blob is fetched by itself rather than through AssignmentResult, whose
+    mapping leaves submitted_file_content out on purpose so that listing
+    submissions never drags every attachment into memory.
+
+    Scoped exactly as get_assignment_students is — the assignment must belong
+    to the class being viewed, so a teacher cannot read a submission from
+    another class by guessing ids.
+    """
+    owns = (
+        db.query(AssignmentMaster.assignment_id)
+        .filter(AssignmentMaster.assignment_id == assignment_id,
+                AssignmentMaster.class_id == class_id)
+        .first()
+    )
+    if not owns:
+        return None
+
+    row = db.execute(
+        text("""
+            SELECT submitted_file_content, submitted_file_name, submitted_file_type
+            FROM assignment_results
+            WHERE assignment_id = :a AND student_id = :s
+            LIMIT 1
+        """),
+        {"a": assignment_id, "s": student_id},
+    ).first()
+
+    if row is None or row[0] is None:
+        return None
+
+    content = bytes(row[0])
+    name = row[1] or f"submission-{student_id}"
+    # Browsers decide how to display from this; a missing type makes a PDF
+    # download as an unnamed binary instead of opening in the viewer.
+    ctype = row[2] or "application/octet-stream"
+    return content, name, ctype
 
 
 def get_assignment_students(db: Session, class_id, assignment_id: int) -> AssignmentStudentsResponse | None:
