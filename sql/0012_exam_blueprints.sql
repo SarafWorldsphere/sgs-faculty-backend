@@ -191,7 +191,15 @@ FOR t IN SELECT tenant_id FROM platform.tenants LOOP
           ('competitive','mcq',50,1.0,1)
         ) AS v(code,question_type,question_count,marks_each,display_seq)
     LOOP
-        SELECT blueprint_id INTO bid FROM exam_blueprint WHERE code = bp.code;
+        -- Scoped by tenant_id explicitly, not left to row-level security.
+        -- This script runs as the table owner, who is a superuser, and a
+        -- superuser bypasses RLS even when it is FORCEd — so without this
+        -- the lookup saw every school's rows and returned the first
+        -- tenant's blueprint_id for the second tenant, which the foreign
+        -- key then rejected.
+        SELECT blueprint_id INTO bid
+        FROM exam_blueprint
+        WHERE code = bp.code AND tenant_id = t.tenant_id;
         IF bid IS NOT NULL THEN
             INSERT INTO exam_blueprint_row (blueprint_id,question_type,question_count,marks_each,display_seq)
             VALUES (bid,bp.question_type,bp.question_count,bp.marks_each,bp.display_seq)
